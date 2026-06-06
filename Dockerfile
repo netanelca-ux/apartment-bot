@@ -9,7 +9,4 @@ RUN playwright install chromium
 
 COPY . .
 
-# Persist DB and Facebook session outside the container
-VOLUME ["/app/data"]
-
 CMD ["python", "main.py"]
