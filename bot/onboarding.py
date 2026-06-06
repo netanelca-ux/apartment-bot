@@ -99,6 +99,32 @@ async def cmd_reset(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     return ROOMS
 
 
+async def cmd_setneighborhoods(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    user = await get_user(update.effective_chat.id)
+    if user is None:
+        await update.message.reply_text(
+            "אין לך עדיין פרופיל. שלח /start כדי להגדיר את הגדרות החיפוש שלך."
+        )
+        return ConversationHandler.END
+
+    # Pre-populate with the user's current canonical neighborhoods,
+    # mapped back to display names for the keyboard
+    current_canonical = set(user.get("neighborhoods", []))
+    selected = [
+        n for n in ALL_NEIGHBORHOODS
+        if any(c in current_canonical for c in NEIGHBORHOOD_CANONICAL.get(n, [n]))
+    ]
+    ctx.user_data["neighborhoods"] = selected
+    ctx.user_data["_editing_neighborhoods"] = True
+
+    await update.message.reply_text(
+        "*שנה אזורים:*\nלחץ על האזורים הרצויים, ואז ׳סיים בחירה׳.",
+        parse_mode="Markdown",
+        reply_markup=_neighborhoods_keyboard(selected),
+    )
+    return NEIGHBORHOODS
+
+
 # ── step 2: rooms ─────────────────────────────────────────────────────────────
 
 async def cb_rooms(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
@@ -182,31 +208,41 @@ async def cb_neighborhoods(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> in
                 if c not in canonical:
                     canonical.append(c)
 
-        await upsert_user(
-            query.from_user.id,
-            rooms=ctx.user_data["rooms"],
-            min_price=ctx.user_data.get("min_price", 0),
-            max_price=ctx.user_data["max_price"],
-            neighborhoods=canonical,
-            active=1,
-        )
-
-        rooms = ctx.user_data["rooms"]
-        rooms_display = int(rooms) if rooms == int(rooms) else rooms
+        editing = ctx.user_data.get("_editing_neighborhoods", False)
         nbhds_display = ", ".join(selected)
-        min_p = ctx.user_data.get("min_price", 0)
-        max_p = ctx.user_data["max_price"]
-        price_display = f"{min_p:,}–{max_p:,}" if min_p else f"עד {max_p:,}"
 
-        await query.edit_message_text(
-            f"✅ *הבוט מוגדר!*\n\n"
-            f"🛏 חדרים: {rooms_display}\n"
-            f"💰 מחיר: {price_display} ₪\n"
-            f"📍 אזורים: {nbhds_display}\n\n"
-            f"תתחיל לקבל התראות ברגע שיופיעו דירות מתאימות 🏠\n\n"
-            f"_שלח /help לרשימת פקודות_",
-            parse_mode="Markdown",
-        )
+        if editing:
+            await upsert_user(query.from_user.id, neighborhoods=canonical)
+        else:
+            await upsert_user(
+                query.from_user.id,
+                rooms=ctx.user_data["rooms"],
+                min_price=ctx.user_data.get("min_price", 0),
+                max_price=ctx.user_data["max_price"],
+                neighborhoods=canonical,
+                active=1,
+            )
+
+        if editing:
+            await query.edit_message_text(
+                f"✅ *אזורים עודכנו!*\n\n📍 {nbhds_display}",
+                parse_mode="Markdown",
+            )
+        else:
+            rooms = ctx.user_data["rooms"]
+            rooms_display = int(rooms) if rooms == int(rooms) else rooms
+            min_p = ctx.user_data.get("min_price", 0)
+            max_p = ctx.user_data["max_price"]
+            price_display = f"{min_p:,}–{max_p:,}" if min_p else f"עד {max_p:,}"
+            await query.edit_message_text(
+                f"✅ *הבוט מוגדר!*\n\n"
+                f"🛏 חדרים: {rooms_display}\n"
+                f"💰 מחיר: {price_display} ₪\n"
+                f"📍 אזורים: {nbhds_display}\n\n"
+                f"תתחיל לקבל התראות ברגע שיופיעו דירות מתאימות 🏠\n\n"
+                f"_שלח /help לרשימת פקודות_",
+                parse_mode="Markdown",
+            )
         ctx.user_data.clear()
         return ConversationHandler.END
 
@@ -234,6 +270,7 @@ def build_conversation_handler() -> ConversationHandler:
         entry_points=[
             CommandHandler("start", cmd_start),
             CommandHandler("reset", cmd_reset),
+            CommandHandler("setneighborhoods", cmd_setneighborhoods),
         ],
         states={
             ROOMS: [CallbackQueryHandler(cb_rooms, pattern=r"^rooms:")],

@@ -51,6 +51,7 @@ async def cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "/setprice 7500 — שנה מחיר מקסימלי\n"
         "/setminprice 4500 — שנה מחיר מינימלי\n"
         "/setrooms 2 — שנה מספר חדרים \\(2, 2\\.5, 3…\\)\n"
+        "/setneighborhoods — שנה אזורים\n"
         "/pause — השהה קבלת התראות\n"
         "/resume — חדש קבלת התראות\n"
         "/reset — הגדר חיפוש מחדש\n"
