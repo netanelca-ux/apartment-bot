@@ -3,19 +3,63 @@ Shared filtering logic applied to all listings before notification.
 """
 from config import SEARCH_CRITERIA
 
+# אם אחד מהביטויים האלה מופיע — זה בעל דירה ישיר, לא מתווך
+NOT_BROKER_PHRASES = [
+    "ללא תיווך",
+    "לא מתיווך",
+    "בלי תיווך",
+    "ישיר מבעל",
+    "מבעל הבית",
+    "בעל הדירה",
+    "ישירות מהבעלים",
+    "ישירות מבעל",
+    "owner",
+]
+
 # מילות מפתח המציינות מתווך/סוכנות נדל"ן
 BROKER_KEYWORDS = [
+    # מילות שורש
     "תיווך",
+    "תווך",
     "מתווך",
     "מתווכת",
+    "מתווכים",
+    "מתווכות",
+    "לתיווך",
+    "דמי תיווך",
+    "עמלת תיווך",
+    # סוכנויות
     "סוכנות",
-    "נכסים",
+    "סוכן נדל",
+    "משרד נדל",
+    "משרד תיווך",
+    # מונחים כלליים
     "real estate",
     "realty",
     "נדל״ן",
     "נדלן",
     "properties",
     "brokers",
+    "broker",
+    "agent",
+    # חברות נדל"ן ישראליות נפוצות
+    "אנגלו סכסון",
+    "anglo saxon",
+    "רימקס",
+    "remax",
+    "re/max",
+    "קושט",
+    "אלדר",
+    "גוטמן",
+    "מדלן",
+    "הומס",
+    "ישרס",
+    "בלו נייטס",
+    "נתנאל גרופ",
+    "אפי גרופ",
+    "פרופימד",
+    "רסקו",
+    "מגה נדל",
 ]
 
 
@@ -42,15 +86,14 @@ def passes_filters(listing: dict) -> bool:
 
 
 def _is_broker_listing(listing: dict) -> bool:
-    # בדוק שם מקור/כותרת/תיאור
     text = " ".join([
         str(listing.get("title", "")),
         str(listing.get("description", "")),
         str(listing.get("neighborhood", "")),
     ]).lower()
 
-    for kw in BROKER_KEYWORDS:
-        if kw.lower() in text:
-            return True
+    # אם מפורש שזה ישיר מבעל — לא מתווך
+    if any(phrase.lower() in text for phrase in NOT_BROKER_PHRASES):
+        return False
 
-    return False
+    return any(kw.lower() in text for kw in BROKER_KEYWORDS)
