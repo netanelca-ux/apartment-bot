@@ -5,6 +5,7 @@ load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+OWNER_CHAT_ID = TELEGRAM_CHAT_ID  # admin-only commands (scan, pause, broadcast)
 
 SEARCH_CRITERIA = {
     "rooms": 2,

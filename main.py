@@ -2,7 +2,7 @@
 בוט חיפוש דירות — נקודת כניסה ראשית.
 
 מריץ סורקים מתוזמנים ומשלח התראות לטלגרם על מודעות חדשות.
-תומך בפקודות טלגרם לשליטה ישירה מהצ'אט.
+כל משתמש מקבל התראות לפי הגדרות אישיות שלו.
 """
 import asyncio
 import logging
@@ -15,7 +15,8 @@ from telegram.ext import Application, CommandHandler
 import config
 from bot.notifier import send_listing, send_status
 from bot import commands
-from db.storage import init_db, is_seen, mark_seen
+from bot.onboarding import build_conversation_handler
+from db.storage import init_db, is_seen, mark_seen, get_active_users
 from scrapers.browser import close_browser, get_context
 from scrapers import yad2, fb_marketplace, fb_groups
 from scrapers.filters import passes_filters
@@ -31,24 +32,63 @@ logger = logging.getLogger("main")
 
 # ── core job logic ────────────────────────────────────────────────────────────
 
+def _user_criteria(user: dict) -> dict:
+    return {
+        "min_price": user.get("min_price", 0),
+        "max_price": user.get("max_price", config.SEARCH_CRITERIA["max_price"]),
+        "rooms": user.get("rooms", config.SEARCH_CRITERIA["rooms"]),
+        "neighborhoods": user.get("neighborhoods", config.SEARCH_CRITERIA["neighborhoods"]),
+        "no_broker": config.SEARCH_CRITERIA.get("no_broker", True),
+        "require_price": config.SEARCH_CRITERIA.get("require_price", True),
+    }
+
+
+def _listing_matches_neighborhood(listing: dict, neighborhoods: list[str]) -> bool:
+    text = " ".join([
+        str(listing.get("neighborhood", "")),
+        str(listing.get("city", "")),
+        str(listing.get("address", "")),
+        str(listing.get("title", "")),
+        str(listing.get("description", "")),
+    ]).lower()
+    return any(n.lower() in text for n in neighborhoods)
+
+
 async def process_listings(listings: list[dict]):
-    new_count = 0
+    users = await get_active_users()
+    if not users:
+        logger.info("No active users — skipping fan-out")
+        return
+
+    new_total = 0
     for listing in listings:
-        source = listing["source"]
-        listing_id = listing["listing_id"]
+        source = listing.get("source", "")
+        listing_id = listing.get("listing_id", "")
         if not listing_id:
             continue
-        if not passes_filters(listing):
-            continue
-        if await is_seen(source, listing_id):
-            continue
-        try:
-            await send_listing(listing)
-            await mark_seen(source, listing_id, listing.get("url", ""))
-            new_count += 1
-        except Exception as e:
-            logger.error(f"Failed to send/record listing {listing_id}: {e}")
-    return new_count
+
+        for user in users:
+            chat_id: int = user["chat_id"]
+            criteria = _user_criteria(user)
+
+            if not passes_filters(listing, criteria):
+                continue
+
+            if not _listing_matches_neighborhood(listing, criteria["neighborhoods"]):
+                continue
+
+            if await is_seen(chat_id, source, listing_id):
+                continue
+
+            try:
+                await send_listing(listing, chat_id)
+                await mark_seen(chat_id, source, listing_id, listing.get("url", ""))
+                new_total += 1
+            except Exception as e:
+                logger.error(f"Failed to send listing {listing_id} to {chat_id}: {e}")
+
+    if new_total:
+        logger.info(f"Sent {new_total} new listing notifications across all users")
 
 
 # ── scheduled jobs ────────────────────────────────────────────────────────────
@@ -60,8 +100,8 @@ async def job_yad2():
     try:
         ctx = await get_context()
         listings = await yad2.fetch_listings(ctx)
-        count = await process_listings(listings)
-        logger.info(f"✅ Yad2 done — {len(listings)} found, {count} new")
+        await process_listings(listings)
+        logger.info(f"✅ Yad2 done — {len(listings)} found")
     except Exception as e:
         logger.error(f"Yad2 job failed: {e}")
 
@@ -73,8 +113,8 @@ async def job_fb_marketplace():
     try:
         ctx = await get_context()
         listings = await fb_marketplace.fetch_listings(ctx)
-        count = await process_listings(listings)
-        logger.info(f"✅ FB Marketplace done — {len(listings)} found, {count} new")
+        await process_listings(listings)
+        logger.info(f"✅ FB Marketplace done — {len(listings)} found")
     except Exception as e:
         logger.error(f"FB Marketplace job failed: {e}")
 
@@ -86,8 +126,8 @@ async def job_fb_groups():
     try:
         ctx = await get_context()
         listings = await fb_groups.fetch_listings(ctx)
-        count = await process_listings(listings)
-        logger.info(f"✅ FB Groups done — {len(listings)} found, {count} new")
+        await process_listings(listings)
+        logger.info(f"✅ FB Groups done — {len(listings)} found")
     except Exception as e:
         logger.error(f"FB Groups job failed: {e}")
 
@@ -102,13 +142,8 @@ async def scan_all():
 # ── startup checks ────────────────────────────────────────────────────────────
 
 def _check_config():
-    missing = []
     if not config.TELEGRAM_BOT_TOKEN:
-        missing.append("TELEGRAM_BOT_TOKEN")
-    if not config.TELEGRAM_CHAT_ID:
-        missing.append("TELEGRAM_CHAT_ID")
-    if missing:
-        logger.error(f"Missing required env vars: {', '.join(missing)}")
+        logger.error("Missing required env var: TELEGRAM_BOT_TOKEN")
         sys.exit(1)
 
 
@@ -119,17 +154,16 @@ async def main():
     await init_db()
 
     logger.info("🚀 Apartment bot starting...")
-    logger.info(f"   Criteria: {config.SEARCH_CRITERIA['rooms']} rooms | "
-                f"up to {config.SEARCH_CRITERIA['max_price']}₪ | "
-                f"{', '.join(config.SEARCH_CRITERIA['neighborhoods'])}")
 
-    # Wire up the /scan command callback
     commands.set_scan_callback(scan_all)
 
-    # Build Telegram Application for receiving commands
     tg_app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
+
+    # Onboarding ConversationHandler handles /start and /reset
+    tg_app.add_handler(build_conversation_handler())
+
+    # Regular commands
     tg_app.add_handler(CommandHandler("help", commands.cmd_help))
-    tg_app.add_handler(CommandHandler("start", commands.cmd_help))
     tg_app.add_handler(CommandHandler("status", commands.cmd_status))
     tg_app.add_handler(CommandHandler("scan", commands.cmd_scan))
     tg_app.add_handler(CommandHandler("setprice", commands.cmd_setprice))
@@ -138,18 +172,16 @@ async def main():
     tg_app.add_handler(CommandHandler("pause", commands.cmd_pause))
     tg_app.add_handler(CommandHandler("resume", commands.cmd_resume))
 
-    # Run initial scan before starting the loop
+    # Run initial scan
     await scan_all()
 
-    await send_status(
-        "🤖 בוט חיפוש דירות פעיל!\n"
-        f"מחפש {config.SEARCH_CRITERIA['rooms']} חדרים עד "
-        f"{config.SEARCH_CRITERIA['max_price']:,}₪ ב"
-        + "‎, ".join(config.SEARCH_CRITERIA["neighborhoods"])
-        + "\n\nשלח /help לרשימת הפקודות"
-    )
+    if config.OWNER_CHAT_ID:
+        await send_status(
+            "🤖 בוט חיפוש דירות עלה לאוויר!\n"
+            "משתמשים חדשים יכולים להקליד /start כדי להגדיר חיפוש אישי.\n\n"
+            "שלח /help לרשימת הפקודות."
+        )
 
-    # Schedule recurring scans
     scheduler = AsyncIOScheduler()
     scheduler.add_job(job_yad2, IntervalTrigger(seconds=config.YAD2_POLL_INTERVAL),
                       id="yad2", max_instances=1, coalesce=True)
@@ -161,7 +193,6 @@ async def main():
     logger.info(f"📅 Scheduler running — Yad2 every {config.YAD2_POLL_INTERVAL // 60}m, "
                 f"Facebook every {config.FACEBOOK_POLL_INTERVAL // 60}m")
 
-    # Start Telegram polling (non-blocking — runs in the background)
     await tg_app.initialize()
     await tg_app.start()
     await tg_app.updater.start_polling(drop_pending_updates=True)

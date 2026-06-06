@@ -1,6 +1,8 @@
 """
 Shared filtering logic applied to all listings before notification.
 """
+from __future__ import annotations
+
 from config import SEARCH_CRITERIA
 
 # אם אחד מהביטויים האלה מופיע — זה בעל דירה ישיר, לא מתווך
@@ -63,22 +65,28 @@ BROKER_KEYWORDS = [
 ]
 
 
-def passes_filters(listing: dict) -> bool:
-    """Returns True if the listing should be sent to Telegram."""
+def passes_filters(listing: dict, criteria: dict | None = None) -> bool:
+    """Returns True if the listing should be sent to Telegram.
 
-    # סנן ללא מחיר
+    criteria can be a per-user dict; falls back to global SEARCH_CRITERIA.
+    """
+    c = criteria if criteria is not None else SEARCH_CRITERIA
+
     price = listing.get("price") or 0
-    if SEARCH_CRITERIA.get("require_price"):
+
+    if c.get("require_price", SEARCH_CRITERIA.get("require_price")):
         if price <= 0:
             return False
 
-    # סנן מחיר נמוך מדי (בדר"כ חדר בשיתוף)
-    min_price = SEARCH_CRITERIA.get("min_price", 0)
+    min_price = c.get("min_price", 0)
     if min_price and price and price < min_price:
         return False
 
-    # סנן מתווכים
-    if SEARCH_CRITERIA.get("no_broker"):
+    max_price = c.get("max_price", 0)
+    if max_price and price and price > max_price:
+        return False
+
+    if c.get("no_broker", SEARCH_CRITERIA.get("no_broker")):
         if _is_broker_listing(listing):
             return False
 

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 """
-Telegram command handlers — lets the user control the bot via chat.
-Only the configured TELEGRAM_CHAT_ID can send commands.
+Telegram command handlers.
+- Per-user commands (/status, /setprice, /setminprice, /setrooms): any registered user.
+- Admin commands (/scan, /pause, /resume): OWNER_CHAT_ID only.
 """
 import logging
 from typing import Callable, Coroutine, Any
@@ -11,6 +12,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 import config
+from db.storage import get_user, upsert_user
 
 logger = logging.getLogger(__name__)
 
@@ -27,51 +29,58 @@ def is_paused() -> bool:
     return _paused
 
 
-def _ok(update: Update) -> bool:
-    """Return True only for the authorized chat."""
-    return str(update.effective_chat.id) == str(config.TELEGRAM_CHAT_ID)
+def _is_owner(update: Update) -> bool:
+    return str(update.effective_chat.id) == str(config.OWNER_CHAT_ID)
+
+
+async def _require_user(update: Update) -> dict | None:
+    """Return the user's DB record, or send an onboarding nudge and return None."""
+    user = await get_user(update.effective_chat.id)
+    if user is None:
+        await update.message.reply_text(
+            "אין לך עדיין פרופיל. שלח /start כדי להגדיר את הגדרות החיפוש שלך."
+        )
+    return user
 
 
 async def cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _ok(update):
-        return
     text = (
         "🤖 *פקודות הבוט:*\n\n"
-        "/status — הגדרות נוכחיות\n"
-        "/scan — סריקה מיידית בכל המקורות\n"
+        "/start — הגדר חיפוש חדש\n"
+        "/status — הגדרות נוכחיות שלך\n"
         "/setprice 7500 — שנה מחיר מקסימלי\n"
         "/setminprice 4500 — שנה מחיר מינימלי\n"
         "/setrooms 2 — שנה מספר חדרים \\(2, 2\\.5, 3…\\)\n"
-        "/pause — השהה סריקות אוטומטיות\n"
-        "/resume — חדש סריקות\n"
+        "/pause — השהה קבלת התראות\n"
+        "/resume — חדש קבלת התראות\n"
+        "/reset — הגדר חיפוש מחדש\n"
         "/help — הצג עזרה זו"
     )
     await update.message.reply_text(text, parse_mode="MarkdownV2")
 
 
 async def cmd_status(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _ok(update):
+    user = await _require_user(update)
+    if user is None:
         return
-    c = config.SEARCH_CRITERIA
-    status_icon = "⏸" if _paused else "✅"
-    status_label = "מושהה" if _paused else "פעיל"
-    neighborhoods = ", ".join(c["neighborhoods"])
+    status_icon = "⏸" if not user["active"] else "✅"
+    status_label = "מושהה" if not user["active"] else "פעיל"
+    rooms = int(user["rooms"]) if user["rooms"] == int(user["rooms"]) else user["rooms"]
+    neighborhoods = ", ".join(user["neighborhoods"])
     text = (
         f"*סטטוס: {status_icon} {status_label}*\n\n"
-        f"🛏 חדרים: `{c['rooms']}`\n"
-        f"💰 טווח מחיר: `{c.get('min_price', 0):,} – {c['max_price']:,} ₪`\n"
-        f"📍 שכונות: {neighborhoods}\n"
-        f"🏷 רק עם מחיר: {'כן' if c.get('require_price') else 'לא'}\n"
-        f"🚫 ללא תיווך: {'כן' if c.get('no_broker') else 'לא'}"
+        f"🛏 חדרים: `{rooms}`\n"
+        f"💰 טווח מחיר: `{user['min_price']:,} – {user['max_price']:,} ₪`\n"
+        f"📍 שכונות: {neighborhoods}"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def cmd_scan(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _ok(update):
+    if not _is_owner(update):
         return
     if _paused:
-        await update.message.reply_text("⏸ הבוט מושהה. שלח /resume כדי להמשיך.")
+        await update.message.reply_text("⏸ הבוט מושהה כלל-מערכתית. שלח /resume כדי להמשיך.")
         return
     await update.message.reply_text("🔍 מתחיל סריקה בכל המקורות...")
     if _scan_all_callback:
@@ -80,62 +89,59 @@ async def cmd_scan(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_setprice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _ok(update):
+    user = await _require_user(update)
+    if user is None:
         return
     try:
         price = int(ctx.args[0])
         if not (500 <= price <= 100_000):
             raise ValueError("out of range")
-        config.SEARCH_CRITERIA["max_price"] = price
+        await upsert_user(update.effective_chat.id, max_price=price)
         await update.message.reply_text(f"✅ מחיר מקסימלי עודכן ל-*{price:,} ₪*", parse_mode="Markdown")
-        logger.info(f"max_price changed to {price} via Telegram command")
     except (IndexError, ValueError):
         await update.message.reply_text("שימוש: `/setprice 7500`", parse_mode="Markdown")
 
 
 async def cmd_setminprice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _ok(update):
+    user = await _require_user(update)
+    if user is None:
         return
     try:
         price = int(ctx.args[0])
         if not (0 <= price <= 100_000):
             raise ValueError("out of range")
-        config.SEARCH_CRITERIA["min_price"] = price
+        await upsert_user(update.effective_chat.id, min_price=price)
         await update.message.reply_text(f"✅ מחיר מינימלי עודכן ל-*{price:,} ₪*", parse_mode="Markdown")
-        logger.info(f"min_price changed to {price} via Telegram command")
     except (IndexError, ValueError):
         await update.message.reply_text("שימוש: `/setminprice 4500`", parse_mode="Markdown")
 
 
 async def cmd_setrooms(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    if not _ok(update):
+    user = await _require_user(update)
+    if user is None:
         return
     try:
         rooms = float(ctx.args[0].replace(",", "."))
         if rooms <= 0:
             raise ValueError("must be positive")
-        config.SEARCH_CRITERIA["rooms"] = rooms
+        await upsert_user(update.effective_chat.id, rooms=rooms)
         display = int(rooms) if rooms == int(rooms) else rooms
         await update.message.reply_text(f"✅ מספר חדרים עודכן ל-*{display}*", parse_mode="Markdown")
-        logger.info(f"rooms changed to {rooms} via Telegram command")
     except (IndexError, ValueError):
         await update.message.reply_text("שימוש: `/setrooms 2` או `/setrooms 2.5`", parse_mode="Markdown")
 
 
 async def cmd_pause(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    global _paused
-    if not _ok(update):
+    user = await _require_user(update)
+    if user is None:
         return
-    _paused = True
-    await update.message.reply_text("⏸ הסריקות הושהו. שלח /resume כדי להמשיך.")
-    logger.info("Bot paused via Telegram command")
+    await upsert_user(update.effective_chat.id, active=0)
+    await update.message.reply_text("⏸ לא תקבל יותר התראות. שלח /resume כדי להמשיך.")
 
 
 async def cmd_resume(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    global _paused
-    if not _ok(update):
+    user = await _require_user(update)
+    if user is None:
         return
-    _paused = True  # set first to avoid race
-    _paused = False
-    await update.message.reply_text("▶️ הסריקות חודשו!")
-    logger.info("Bot resumed via Telegram command")
+    await upsert_user(update.effective_chat.id, active=1)
+    await update.message.reply_text("▶️ חזרת לקבל התראות!")
