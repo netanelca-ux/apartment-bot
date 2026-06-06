@@ -1,0 +1,12 @@
+version: "3.9"
+
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # Persists the SQLite DB and Facebook cookies between restarts
+      - ./data:/app/data
+    environment:
+      - PYTHONUNBUFFERED=1

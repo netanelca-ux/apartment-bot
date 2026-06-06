@@ -1,0 +1,7 @@
+.env
+facebook_cookies.json
+data/
+__pycache__/
+*.pyc
+.DS_Store
+*.png
