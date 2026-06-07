@@ -38,10 +38,16 @@ async def init_db():
                 min_price     INTEGER DEFAULT 4500,
                 max_price     INTEGER DEFAULT 7200,
                 neighborhoods TEXT    DEFAULT '[]',
+                broker_filter TEXT    DEFAULT 'no_broker',
                 active        INTEGER DEFAULT 1,
                 created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Migrate existing DBs that don't have broker_filter column yet
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN broker_filter TEXT DEFAULT 'no_broker'")
+        except Exception:
+            pass  # Column already exists
         await db.execute("""
             CREATE TABLE IF NOT EXISTS seen_listings (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,

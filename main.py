@@ -10,7 +10,7 @@ import sys
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from telegram.ext import Application, CommandHandler
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
 import config
 from bot.notifier import send_listing, send_status
@@ -39,7 +39,7 @@ def _user_criteria(user: dict) -> dict:
         "max_price": user.get("max_price", config.SEARCH_CRITERIA["max_price"]),
         "rooms": user.get("rooms") or None,
         "neighborhoods": user.get("neighborhoods", config.SEARCH_CRITERIA["neighborhoods"]),
-        "no_broker": config.SEARCH_CRITERIA.get("no_broker", True),
+        "broker_filter": user.get("broker_filter", "no_broker"),
         "require_price": config.SEARCH_CRITERIA.get("require_price", True),
     }
 
@@ -190,6 +190,8 @@ async def main():
     tg_app.add_handler(CommandHandler("scan", commands.cmd_scan))
     tg_app.add_handler(CommandHandler("setprice", commands.cmd_setprice))
     tg_app.add_handler(CommandHandler("setminprice", commands.cmd_setminprice))
+    tg_app.add_handler(CommandHandler("setbroker", commands.cmd_setbroker))
+    tg_app.add_handler(CallbackQueryHandler(commands.cb_setbroker, pattern=r"^broker:"))
     tg_app.add_handler(CommandHandler("pause", commands.cmd_pause))
     tg_app.add_handler(CommandHandler("resume", commands.cmd_resume))
 

@@ -140,6 +140,7 @@ def _parse_dehydrated_items(items: list) -> list[dict]:
             "description": "",
             "floor": str(floor) if floor is not None else None,
             "available_from": None,
+            "ad_type": item.get("adType", ""),  # "private" or "agency"
             "url": f"https://www.yad2.co.il/realestate/item/tel-aviv-area/{token}",
         })
     return results

@@ -87,8 +87,22 @@ def passes_filters(listing: dict, criteria: dict | None = None) -> bool:
         if not any(abs(float(listing_rooms) - r) < 0.3 for r in criteria_rooms):
             return False
 
-    if c.get("no_broker", SEARCH_CRITERIA.get("no_broker")):
-        if _is_broker_listing(listing):
+    # broker_filter: "no_broker" | "any"
+    # Falls back to legacy no_broker bool if broker_filter not set.
+    broker_filter = c.get("broker_filter")
+    if broker_filter is None:
+        broker_filter = "no_broker" if c.get("no_broker", SEARCH_CRITERIA.get("no_broker", True)) else "any"
+
+    if broker_filter != "any":
+        ad_type = listing.get("ad_type", "")
+        if ad_type == "private":
+            is_broker = False
+        elif ad_type == "agency":
+            is_broker = True
+        else:
+            is_broker = _is_broker_listing(listing)
+
+        if broker_filter == "no_broker" and is_broker:
             return False
 
     return True

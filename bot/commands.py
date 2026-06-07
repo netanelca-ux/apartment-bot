@@ -8,7 +8,7 @@ Telegram command handlers.
 import logging
 from typing import Callable, Coroutine, Any
 
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 import config
@@ -52,6 +52,7 @@ async def cmd_help(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         "/setminprice 4500 — שנה מחיר מינימלי\n"
         "/setrooms 2 — שנה מספר חדרים \\(2, 2\\.5, 3…\\)\n"
         "/setneighborhoods — שנה אזורים\n"
+        "/setbroker — סינון תיווך \\(ללא תיווך / הכל\\)\n"
         "/pause — השהה קבלת התראות\n"
         "/resume — חדש קבלת התראות\n"
         "/reset — הגדר חיפוש מחדש\n"
@@ -71,11 +72,13 @@ async def cmd_status(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         rooms_str = ", ".join(str(int(r)) if r == int(r) else str(r) for r in user["rooms"])
     neighborhoods = ", ".join(user["neighborhoods"])
+    broker_str = "ללא תיווך בלבד" if user.get("broker_filter", "no_broker") == "no_broker" else "הכל (כולל מתווכים)"
     text = (
         f"*סטטוס: {status_icon} {status_label}*\n\n"
         f"🛏 חדרים: `{rooms_str}`\n"
         f"💰 טווח מחיר: `{user['min_price']:,} – {user['max_price']:,} ₪`\n"
-        f"📍 שכונות: {neighborhoods}"
+        f"📍 שכונות: {neighborhoods}\n"
+        f"🤝 תיווך: {broker_str}"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -119,6 +122,29 @@ async def cmd_setminprice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
     except (IndexError, ValueError):
         await update.message.reply_text("שימוש: `/setminprice 4500`", parse_mode="Markdown")
 
+
+
+async def cmd_setbroker(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    user = await _require_user(update)
+    if user is None:
+        return
+    current = user.get("broker_filter", "no_broker")
+    no_check = "✅ " if current == "no_broker" else ""
+    any_check = "✅ " if current == "any" else ""
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"{no_check}ללא תיווך בלבד", callback_data="broker:no_broker")],
+        [InlineKeyboardButton(f"{any_check}הכל (כולל מתווכים)", callback_data="broker:any")],
+    ])
+    await update.message.reply_text("*סינון תיווך:*", parse_mode="Markdown", reply_markup=keyboard)
+
+
+async def cb_setbroker(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    await query.answer()
+    value = query.data.split(":", 1)[1]
+    await upsert_user(query.from_user.id, broker_filter=value)
+    label = "ללא תיווך בלבד" if value == "no_broker" else "הכל (כולל מתווכים)"
+    await query.edit_message_text(f"✅ עודכן: *{label}*", parse_mode="Markdown")
 
 
 async def cmd_pause(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
