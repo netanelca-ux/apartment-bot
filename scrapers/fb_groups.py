@@ -9,6 +9,7 @@ import base64
 import json
 import logging
 import re
+from datetime import date, datetime, timezone
 from typing import Optional
 
 from playwright.async_api import BrowserContext, Response
@@ -94,6 +95,30 @@ def _extract_post_text(node: dict) -> str:
     return ""
 
 
+def _format_timestamp(ts: int) -> str:
+    dt = datetime.fromtimestamp(ts, tz=timezone.utc).astimezone()
+    today = date.today()
+    d = dt.date()
+    if d == today:
+        return f"היום {dt.strftime('%H:%M')}"
+    if (today.toordinal() - d.toordinal()) == 1:
+        return f"אתמול {dt.strftime('%H:%M')}"
+    return dt.strftime('%d/%m/%y')
+
+
+def _extract_creation_time(node: dict) -> Optional[str]:
+    for path in [
+        ("comet_sections", "context", "story", "creation_time"),
+        ("comet_sections", "context_layout", "story", "creation_time"),
+        ("feedback", "creation_time"),
+        ("creation_time",),
+    ]:
+        t = _get_nested(node, *path)
+        if isinstance(t, (int, float)) and t > 0:
+            return _format_timestamp(int(t))
+    return None
+
+
 def _extract_post_id(node: dict) -> Optional[str]:
     """Extract numeric post ID from a story node."""
     # feedback.id is most reliable (base64-encoded "feedback:NUMERIC_ID")
@@ -113,8 +138,8 @@ def _extract_post_id(node: dict) -> Optional[str]:
     return None
 
 
-def _parse_graphql_response(data: dict) -> list[tuple[str, str]]:
-    """Return [(post_id, text)] found in one GraphQL response object."""
+def _parse_graphql_response(data: dict) -> list[tuple[str, str, Optional[str]]]:
+    """Return [(post_id, text, published_at)] found in one GraphQL response object."""
     results = []
 
     # Group feed: data.node.group_feed.edges[].node
@@ -125,7 +150,7 @@ def _parse_graphql_response(data: dict) -> list[tuple[str, str]]:
             post_id = _extract_post_id(node)
             text = _extract_post_text(node)
             if post_id and text:
-                results.append((post_id, text))
+                results.append((post_id, text, _extract_creation_time(node)))
 
     # Single story page: data.node (when __typename == "Story")
     single = _get_nested(data, "data", "node")
@@ -133,7 +158,7 @@ def _parse_graphql_response(data: dict) -> list[tuple[str, str]]:
         post_id = _extract_post_id(single)
         text = _extract_post_text(single)
         if post_id and text:
-            results.append((post_id, text))
+            results.append((post_id, text, _extract_creation_time(single)))
 
     return results
 
@@ -146,7 +171,7 @@ async def _scrape_group(context: BrowserContext, group_url: str) -> list[dict]:
     m = re.search(r"/groups/(\w+)", group_url)
     group_id = m.group(1) if m else ""
 
-    raw_posts: dict[str, str] = {}  # post_id → full text
+    raw_posts: dict[str, dict] = {}  # post_id → {text, published_at}
 
     async def on_response(response: Response):
         if "graphql" not in response.url or response.status != 200:
@@ -159,9 +184,9 @@ async def _scrape_group(context: BrowserContext, group_url: str) -> list[dict]:
                     continue
                 try:
                     parsed = json.loads(line)
-                    for post_id, text in _parse_graphql_response(parsed):
+                    for post_id, text, published_at in _parse_graphql_response(parsed):
                         if post_id not in raw_posts:
-                            raw_posts[post_id] = text
+                            raw_posts[post_id] = {"text": text, "published_at": published_at}
                 except Exception:
                     pass
         except Exception:
@@ -185,7 +210,8 @@ async def _scrape_group(context: BrowserContext, group_url: str) -> list[dict]:
 
         logger.debug(f"Group {group_url}: {len(raw_posts)} posts intercepted via GraphQL")
 
-        for post_id, text in raw_posts.items():
+        for post_id, data in raw_posts.items():
+            text = data["text"]
             if not _is_listing(text):
                 continue
 
@@ -209,6 +235,7 @@ async def _scrape_group(context: BrowserContext, group_url: str) -> list[dict]:
                 "neighborhood": neighborhood,
                 "address": "",
                 "description": text[:400],
+                "published_at": data.get("published_at"),
                 "url": post_url,
             })
 

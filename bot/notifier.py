@@ -143,6 +143,10 @@ async def send_listing(listing: dict, chat_id: int):
     if available:
         lines.append(f"📅 כניסה: {available}")
 
+    published = listing.get("published_at")
+    if published:
+        lines.append(f"🕐 פורסם: {published}")
+
     address = listing.get("address", "")
     if address:
         lines.append(f"📍 {address}")

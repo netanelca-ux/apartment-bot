@@ -1,9 +1,10 @@
 """
-Onboarding flow — guides a new user through setting up their search preferences.
+Onboarding flow — natural language first, buttons for editing.
 """
 from __future__ import annotations
 
 import logging
+import re
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -19,7 +20,7 @@ from db.storage import get_user, upsert_user
 
 logger = logging.getLogger(__name__)
 
-ROOMS, MAX_PRICE, MIN_PRICE, NEIGHBORHOODS = range(4)
+DESCRIBE, ROOMS, NEIGHBORHOODS = range(3)
 
 ALL_ROOMS = ["1.5", "2", "2.5", "3", "3.5", "4+"]
 
@@ -41,6 +42,92 @@ NEIGHBORHOOD_CANONICAL = {
     "לוינסקי": ["לוינסקי"],
 }
 
+# Extra aliases not in the display names above
+_NEIGHBORHOOD_ALIASES = {
+    "לב העיר / מרכז העיר": ["לב תל אביב", "לב-תל אביב", "סנטר", "center"],
+    "פלורנטין": ["florentin", "flornetin"],
+    "נווה צדק": ["neve tzedek", "neve zedek"],
+}
+
+_DEFAULT_NEIGHBORHOODS_CANONICAL = [
+    "פלורנטין", "צפון פלורנטין", "לב העיר", "מרכז העיר", "נווה צדק",
+]
+
+_ROOM_WORDS = {
+    "לזוג": 2.0, "זוג": 2.0,
+    "שניים": 2.0, "שתיים": 2.0, "שני חדרים": 2.0, "שתי": 2.0,
+    "שלושה": 3.0, "שלוש חדרים": 3.0, "שלושה חדרים": 3.0,
+    "ארבעה": 4.0, "ארבע חדרים": 4.0,
+    "חדר אחד": 1.0, "חדר וחצי": 1.5,
+}
+
+
+# ── natural-language parser ────────────────────────────────────────────────────
+
+def _parse_natural_language(text: str) -> dict:
+    result: dict = {}
+
+    # Max price: "עד 7000" / "מקסימום 7,000" / "7000 ₪" / "7000 שקל"
+    for pat in [
+        r'עד\s*[₪]?\s*([\d,]+)',
+        r'מקסימום\s*([\d,]+)',
+        r'מקס[׳\']?\s*([\d,]+)',
+        r'([\d,]{4,})\s*(?:₪|שקל|ש[״"׳]ח)',
+    ]:
+        m = re.search(pat, text)
+        if m:
+            try:
+                price = int(m.group(1).replace(',', ''))
+                if 1000 <= price <= 50_000:
+                    result['max_price'] = price
+                    break
+            except ValueError:
+                pass
+
+    # Rooms: "2 חדרים" / "2.5 חדר" / word phrases
+    m = re.search(r'([\d]+(?:[.,][\d])?)\s*[+-]?\s*חדר', text)
+    if m:
+        try:
+            rooms = float(m.group(1).replace(',', '.'))
+            result['rooms'] = [rooms]
+        except ValueError:
+            pass
+    else:
+        for phrase, num in _ROOM_WORDS.items():
+            if phrase in text:
+                result['rooms'] = [num]
+                break
+
+    # Neighborhoods
+    found: list[str] = []
+    for display in ALL_NEIGHBORHOODS:
+        canonical_list = NEIGHBORHOOD_CANONICAL.get(display, [display])
+        aliases = _NEIGHBORHOOD_ALIASES.get(display, [])
+        all_terms = canonical_list + aliases
+        if any(term.lower() in text.lower() for term in all_terms):
+            if display not in found:
+                found.append(display)
+    result['neighborhoods'] = found
+
+    return result
+
+
+def _canonical_from_display(display_list: list[str]) -> list[str]:
+    canonical: list[str] = []
+    for n in display_list:
+        for c in NEIGHBORHOOD_CANONICAL.get(n, [n]):
+            if c not in canonical:
+                canonical.append(c)
+    return canonical
+
+
+def _rooms_display(rooms: list[float] | None) -> str:
+    if not rooms:
+        return "כל החדרים"
+    return ", ".join(str(int(r)) if r == int(r) else str(r) for r in rooms)
+
+
+# ── keyboards (used by edit commands) ─────────────────────────────────────────
 
 def _rooms_keyboard(selected: list[str]) -> InlineKeyboardMarkup:
     rows = []
@@ -65,60 +152,99 @@ def _neighborhoods_keyboard(selected: list[str]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def _rooms_display(selected: list[str]) -> str:
-    return ", ".join(selected) if selected else "—"
+# ── /start — natural language onboarding ─────────────────────────────────────
 
-
-# ── step 1: /start ────────────────────────────────────────────────────────────
-
-async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+async def cmd_start(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     chat_id = update.effective_chat.id
     user = await get_user(chat_id)
 
     if user:
-        if not user["rooms"]:
-            rooms_str = "כל החדרים"
-        else:
-            rooms_str = ", ".join(str(int(r)) if r == int(r) else str(r) for r in user["rooms"])
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("⚙️ שנה הגדרות", callback_data="sett:open")
+        ]])
+        rooms_str = _rooms_display(user["rooms"])
+        min_p = user.get("min_price", 0)
+        max_p = user.get("max_price", 7_200)
+        price_str = f"{min_p:,} – {max_p:,}" if min_p else f"עד {max_p:,}"
         nbhds = ", ".join(user["neighborhoods"])
         await update.message.reply_text(
             f"👋 ברוך השב!\n\n"
-            f"ההגדרות שלך כרגע:\n"
             f"🛏 חדרים: {rooms_str}\n"
-            f"💰 מחיר: {user['min_price']:,}–{user['max_price']:,} ₪\n"
+            f"💰 מחיר: {price_str} ₪\n"
             f"📍 אזורים: {nbhds}\n\n"
-            f"לשינוי הגדרות שלח /setprice, /setrooms, /setneighborhoods\n"
-            f"לאיפוס מלא שלח /reset"
+            f"הבוט פעיל ומחפש עבורך 🔍",
+            reply_markup=keyboard,
         )
         return ConversationHandler.END
 
     await update.message.reply_text(
-        "👋 שלום! אני בוט שמחפש דירות להשכרה ברגע שהן מתפרסמות.\n\n"
-        "בוא נגדיר את מה שאתה מחפש.\n\n"
-        "*כמה חדרים?* (אפשר לבחור כמה)",
+        "👋 היי! אני בוט שסורק דירות להשכרה בתל אביב 24/7 ⚡️\n"
+        "ברגע שתיפול דירה חדשה שמתאימה לך — אתה הראשון לדעת 🔔\n\n"
+        "ספר לי מה אתה מחפש:\n\n"
+        "_לדוגמה: 'דירת 2 חדרים עד 7000 ₪ בפלורנטין או נווה צדק'_",
         parse_mode="Markdown",
-        reply_markup=_rooms_keyboard([]),
     )
-    ctx.user_data["rooms"] = []
-    return ROOMS
+    return DESCRIBE
 
 
-async def cmd_reset(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    ctx.user_data["rooms"] = []
+async def cmd_reset(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text(
-        "*כמה חדרים אתה מחפש?* (אפשר לבחור כמה)",
+        "🔄 נתחיל מחדש.\n\n"
+        "ספר לי מה אתה מחפש:\n\n"
+        "_לדוגמה: 'דירת 2 חדרים עד 7000 ₪ בפלורנטין'_",
         parse_mode="Markdown",
-        reply_markup=_rooms_keyboard([]),
     )
-    return ROOMS
+    return DESCRIBE
 
+
+async def msg_describe(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    parsed = _parse_natural_language(text)
+
+    max_price = parsed.get('max_price', 7200)
+    rooms_floats: list[float] | None = parsed.get('rooms')
+    neighborhoods_display = parsed.get('neighborhoods') or []
+
+    if not neighborhoods_display:
+        # No neighborhood detected — use defaults but tell the user
+        canonical = _DEFAULT_NEIGHBORHOODS_CANONICAL
+        neighborhoods_display = ["פלורנטין", "לב העיר / מרכז העיר", "נווה צדק"]
+    else:
+        canonical = _canonical_from_display(neighborhoods_display)
+
+    await upsert_user(
+        update.effective_chat.id,
+        rooms=rooms_floats,
+        min_price=0,
+        max_price=max_price,
+        neighborhoods=canonical,
+        active=1,
+    )
+
+    rooms_str = _rooms_display(rooms_floats)
+    nbhds_str = ", ".join(neighborhoods_display)
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("⚙️ שנה הגדרות", callback_data="sett:open")
+    ]])
+    await update.message.reply_text(
+        f"✅ *הבוט מוגדר ויוצא לסרוק!* 🚀\n\n"
+        f"🛏 חדרים: {rooms_str}\n"
+        f"💰 מחיר: עד {max_price:,} ₪\n"
+        f"📍 אזורים: {nbhds_str}\n\n"
+        f"ברגע שתיפול דירה מתאימה — תקבל התראה ⚡️",
+        parse_mode="Markdown",
+        reply_markup=keyboard,
+    )
+    return ConversationHandler.END
+
+
+# ── /setrooms ─────────────────────────────────────────────────────────────────
 
 async def cmd_setrooms(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     user = await get_user(update.effective_chat.id)
     if user is None:
-        await update.message.reply_text(
-            "אין לך עדיין פרופיל. שלח /start כדי להגדיר את הגדרות החיפוש שלך."
-        )
+        await update.message.reply_text("אין לך עדיין פרופיל. שלח /start להגדרה.")
         return ConversationHandler.END
 
     current = []
@@ -138,9 +264,7 @@ async def cmd_setrooms(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 async def cmd_setneighborhoods(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     user = await get_user(update.effective_chat.id)
     if user is None:
-        await update.message.reply_text(
-            "אין לך עדיין פרופיל. שלח /start כדי להגדיר את הגדרות החיפוש שלך."
-        )
+        await update.message.reply_text("אין לך עדיין פרופיל. שלח /start להגדרה.")
         return ConversationHandler.END
 
     current_canonical = set(user.get("neighborhoods", []))
@@ -159,7 +283,7 @@ async def cmd_setneighborhoods(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -
     return NEIGHBORHOODS
 
 
-# ── step 2: rooms (multi-select) ──────────────────────────────────────────────
+# ── rooms callback ─────────────────────────────────────────────────────────────
 
 async def cb_rooms(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -168,34 +292,21 @@ async def cb_rooms(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     selected: list[str] = ctx.user_data.setdefault("rooms", [])
 
     if value == "all":
-        # Clear all specific selections — "כל החדרים"
         selected.clear()
         await query.edit_message_reply_markup(reply_markup=_rooms_keyboard(selected))
         return ROOMS
 
     if value == "done":
         rooms_floats = [4.0 if r == "4+" else float(r) for r in selected] if selected else None
-        rooms_display = _rooms_display(selected) if selected else "כל החדרים"
-
-        editing = ctx.user_data.get("_editing_rooms", False)
-        if editing:
-            await upsert_user(query.from_user.id, rooms=rooms_floats)
-            await query.edit_message_text(
-                f"✅ *חדרים עודכנו!*\n\n🛏 {rooms_display}",
-                parse_mode="Markdown",
-            )
-            ctx.user_data.clear()
-            return ConversationHandler.END
-
-        ctx.user_data["rooms_floats"] = rooms_floats
+        rooms_display = _rooms_display(rooms_floats)
+        await upsert_user(query.from_user.id, rooms=rooms_floats)
         await query.edit_message_text(
-            f"✅ {rooms_display}\n\n"
-            f"*מה המחיר המקסימלי לחודש? (הקלד מספר בשקלים)*",
+            f"✅ *חדרים עודכנו:* {rooms_display}",
             parse_mode="Markdown",
         )
-        return MAX_PRICE
+        ctx.user_data.clear()
+        return ConversationHandler.END
 
-    # Toggle specific room count
     if value in selected:
         selected.remove(value)
     else:
@@ -205,52 +316,7 @@ async def cb_rooms(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     return ROOMS
 
 
-# ── step 3: max price ─────────────────────────────────────────────────────────
-
-async def msg_max_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    try:
-        price = int(update.message.text.replace(",", "").replace("₪", "").strip())
-        if not (1000 <= price <= 100_000):
-            raise ValueError
-    except ValueError:
-        await update.message.reply_text("אנא הקלד מספר תקין, למשל: 7200")
-        return MAX_PRICE
-    ctx.user_data["max_price"] = price
-    await update.message.reply_text(
-        f"✅ עד {price:,} ₪\n\n"
-        f"*מה המחיר המינימלי?* (כדי לסנן חדרים בשיתוף)\n"
-        f"הקלד מספר, או /skip אם לא רלוונטי.",
-        parse_mode="Markdown",
-    )
-    return MIN_PRICE
-
-
-# ── step 4: min price ─────────────────────────────────────────────────────────
-
-async def msg_min_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text.strip()
-    if text.lower() in ("/skip", "skip", "0", "-"):
-        ctx.user_data["min_price"] = 0
-    else:
-        try:
-            price = int(text.replace(",", "").replace("₪", "").strip())
-            if not (0 <= price <= 100_000):
-                raise ValueError
-            ctx.user_data["min_price"] = price
-        except ValueError:
-            await update.message.reply_text("אנא הקלד מספר תקין, או /skip לדילוג.")
-            return MIN_PRICE
-
-    ctx.user_data.setdefault("neighborhoods", [])
-    await update.message.reply_text(
-        "*באיזה אזורים תחפש?*\nלחץ על האזורים הרצויים, ואז ׳סיים בחירה׳.",
-        parse_mode="Markdown",
-        reply_markup=_neighborhoods_keyboard([]),
-    )
-    return NEIGHBORHOODS
-
-
-# ── step 5: neighborhoods ─────────────────────────────────────────────────────
+# ── neighborhoods callback ────────────────────────────────────────────────────
 
 async def cb_neighborhoods(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -263,47 +329,13 @@ async def cb_neighborhoods(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> in
             await query.answer("בחר לפחות אזור אחד", show_alert=True)
             return NEIGHBORHOODS
 
-        canonical: list[str] = []
-        for n in selected:
-            for c in NEIGHBORHOOD_CANONICAL.get(n, [n]):
-                if c not in canonical:
-                    canonical.append(c)
-
-        editing = ctx.user_data.get("_editing_neighborhoods", False)
+        canonical = _canonical_from_display(selected)
         nbhds_display = ", ".join(selected)
-
-        if editing:
-            await upsert_user(query.from_user.id, neighborhoods=canonical)
-            await query.edit_message_text(
-                f"✅ *אזורים עודכנו!*\n\n📍 {nbhds_display}",
-                parse_mode="Markdown",
-            )
-        else:
-            rooms_floats = ctx.user_data.get("rooms_floats")
-            rooms_raw: list[str] = ctx.user_data.get("rooms", [])
-            rooms_display = _rooms_display(rooms_raw) if rooms_raw else "כל החדרים"
-            min_p = ctx.user_data.get("min_price", 0)
-            max_p = ctx.user_data["max_price"]
-            price_display = f"{min_p:,}–{max_p:,}" if min_p else f"עד {max_p:,}"
-
-            await upsert_user(
-                query.from_user.id,
-                rooms=rooms_floats,
-                min_price=min_p,
-                max_price=max_p,
-                neighborhoods=canonical,
-                active=1,
-            )
-            await query.edit_message_text(
-                f"✅ *הבוט מוגדר!*\n\n"
-                f"🛏 חדרים: {rooms_display}\n"
-                f"💰 מחיר: {price_display} ₪\n"
-                f"📍 אזורים: {nbhds_display}\n\n"
-                f"תתחיל לקבל התראות ברגע שיופיעו דירות מתאימות 🏠\n\n"
-                f"_שלח /help לרשימת פקודות_",
-                parse_mode="Markdown",
-            )
-
+        await upsert_user(query.from_user.id, neighborhoods=canonical)
+        await query.edit_message_text(
+            f"✅ *אזורים עודכנו:* {nbhds_display}",
+            parse_mode="Markdown",
+        )
         ctx.user_data.clear()
         return ConversationHandler.END
 
@@ -332,12 +364,8 @@ def build_conversation_handler() -> ConversationHandler:
             CommandHandler("setneighborhoods", cmd_setneighborhoods),
         ],
         states={
+            DESCRIBE: [MessageHandler(filters.TEXT & ~filters.COMMAND, msg_describe)],
             ROOMS: [CallbackQueryHandler(cb_rooms, pattern=r"^rooms:")],
-            MAX_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, msg_max_price)],
-            MIN_PRICE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, msg_min_price),
-                CommandHandler("skip", msg_min_price),
-            ],
             NEIGHBORHOODS: [CallbackQueryHandler(cb_neighborhoods, pattern=r"^nbhd:")],
         },
         fallbacks=[CommandHandler("cancel", cancel)],

@@ -97,8 +97,11 @@ def _extract_dehydrated_items(html: str) -> list:
                 qdata = q.get("state", {}).get("data", {})
                 if isinstance(qdata, dict) and ("private" in qdata or "agency" in qdata):
                     items: list = []
-                    items.extend(qdata.get("private") or [])
-                    items.extend(qdata.get("agency") or [])
+                    # Tag each item with its section so broker detection is exact
+                    for item in (qdata.get("private") or []):
+                        items.append({**item, "_ad_section": "private"})
+                    for item in (qdata.get("agency") or []):
+                        items.append({**item, "_ad_section": "agency"})
                     if items:
                         return items
         except Exception as e:
@@ -129,6 +132,12 @@ def _parse_dehydrated_items(items: list) -> list[dict]:
         address_str = f"{street} {house_num}".strip() if street else ""
         prop_type = details.get("property", {}).get("text", "דירה")
 
+        # Extract publication date from cover image URL: _20260607140515.jpeg
+        meta = item.get("metaData", {})
+        cover = meta.get("coverImage", "") if isinstance(meta, dict) else ""
+        pub_m = re.search(r'_(\d{4})(\d{2})(\d{2})\d{6}\.', cover)
+        published_at = f"{pub_m.group(3)}/{pub_m.group(2)}/{pub_m.group(1)[2:]}" if pub_m else None
+
         results.append({
             "source": "yad2",
             "listing_id": token,
@@ -140,7 +149,8 @@ def _parse_dehydrated_items(items: list) -> list[dict]:
             "description": "",
             "floor": str(floor) if floor is not None else None,
             "available_from": None,
-            "ad_type": item.get("adType", ""),  # "private" or "agency"
+            "published_at": published_at,
+            "ad_type": item.get("adType") or item.get("_ad_section", ""),
             "url": f"https://www.yad2.co.il/realestate/item/tel-aviv-area/{token}",
         })
     return results

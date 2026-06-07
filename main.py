@@ -10,12 +10,13 @@ import sys
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler
+from telegram.ext import Application, CommandHandler
 
 import config
 from bot.notifier import send_listing, send_status
 from bot import commands
 from bot.onboarding import build_conversation_handler
+from bot.settings_panel import build_settings_handler
 from db.storage import init_db, is_seen, mark_seen, get_active_users, get_user, upsert_user
 from scrapers.browser import close_browser, get_context
 from scrapers import yad2, fb_marketplace, fb_groups, yad2_scrapingbee
@@ -181,17 +182,13 @@ async def main():
 
     tg_app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
 
-    # Onboarding ConversationHandler handles /start and /reset
+    # ConversationHandlers (must be registered before standalone handlers)
     tg_app.add_handler(build_conversation_handler())
+    tg_app.add_handler(build_settings_handler())
 
-    # Regular commands
+    # Standalone commands
     tg_app.add_handler(CommandHandler("help", commands.cmd_help))
-    tg_app.add_handler(CommandHandler("status", commands.cmd_status))
     tg_app.add_handler(CommandHandler("scan", commands.cmd_scan))
-    tg_app.add_handler(CommandHandler("setprice", commands.cmd_setprice))
-    tg_app.add_handler(CommandHandler("setminprice", commands.cmd_setminprice))
-    tg_app.add_handler(CommandHandler("setbroker", commands.cmd_setbroker))
-    tg_app.add_handler(CallbackQueryHandler(commands.cb_setbroker, pattern=r"^broker:"))
     tg_app.add_handler(CommandHandler("pause", commands.cmd_pause))
     tg_app.add_handler(CommandHandler("resume", commands.cmd_resume))
 

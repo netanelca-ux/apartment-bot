@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Facebook Marketplace scraper.
 Navigates to the Tel Aviv rentals page and extracts listings matching criteria.
