@@ -33,14 +33,20 @@ async def fetch_listings(api_key: str) -> list[dict]:
     if not html:
         return []
 
-    # Try to get structured JSON from Next.js __NEXT_DATA__ first
-    items = _extract_next_data_items(html)
+    # Extract from dehydratedState (React Query cache in Next.js)
+    items = _extract_dehydrated_items(html)
     if items:
-        results = _parse_api_items(items)
+        results = _parse_dehydrated_items(items)
+        logger.info(f"Yad2: {len(results)} listings from dehydratedState")
+        return results
+
+    # Fall back to legacy __NEXT_DATA__ or HTML link parsing
+    legacy_items = _extract_next_data_items(html)
+    if legacy_items:
+        results = _parse_api_items(legacy_items)
         logger.info(f"Yad2: {len(results)} listings from __NEXT_DATA__")
         return results
 
-    # Fall back to parsing listing links from the rendered HTML
     results = _parse_html_links(html)
     logger.info(f"Yad2: {len(results)} listings from HTML parsing")
     return results
@@ -52,9 +58,8 @@ async def _get_rendered_html(api_key: str) -> str:
             "api_key": api_key,
             "url": SEARCH_URL,
             "render_js": "true",
-            "wait": 4000,
-            "premium_proxy": "true",
-            "country_code": "il",
+            "wait": 5000,
+            "stealth_proxy": "true",
         }
         async with httpx.AsyncClient(timeout=90) as client:
             resp = await client.get(SCRAPINGBEE_API, params=params)
@@ -72,6 +77,72 @@ async def _get_rendered_html(api_key: str) -> str:
     except Exception as e:
         logger.error(f"ScrapingBee request failed: {e}")
         return ""
+
+
+def _extract_dehydrated_items(html: str) -> list:
+    """Extract listings from React Query dehydratedState (current Yad2 format)."""
+    scripts = re.findall(r'<script[^>]*>(.*?)</script>', html, re.DOTALL)
+    for s in scripts:
+        if 'dehydratedState' not in s or 'price' not in s:
+            continue
+        try:
+            data = json.loads(s)
+            queries = (
+                data.get("props", {})
+                    .get("pageProps", {})
+                    .get("dehydratedState", {})
+                    .get("queries", [])
+            )
+            for q in queries:
+                qdata = q.get("state", {}).get("data", {})
+                if isinstance(qdata, dict) and ("private" in qdata or "agency" in qdata):
+                    items: list = []
+                    items.extend(qdata.get("private") or [])
+                    items.extend(qdata.get("agency") or [])
+                    if items:
+                        return items
+        except Exception as e:
+            logger.debug(f"dehydratedState parse error: {e}")
+    return []
+
+
+def _parse_dehydrated_items(items: list) -> list[dict]:
+    """Parse the new Yad2 dehydratedState listing format."""
+    results = []
+    for item in items:
+        addr = item.get("address", {})
+        neighborhood = addr.get("neighborhood", {}).get("text", "")
+        city = addr.get("city", {}).get("text", "")
+        street = addr.get("street", {}).get("text", "")
+        house_num = addr.get("house", {}).get("number", "")
+        floor = addr.get("house", {}).get("floor")
+
+        combined = f"{neighborhood} {city} {street}"
+        if not _matches_neighborhoods(combined):
+            continue
+
+        token = item.get("token", "")
+        if not token:
+            continue
+
+        details = item.get("additionalDetails", {})
+        address_str = f"{street} {house_num}".strip() if street else ""
+        prop_type = details.get("property", {}).get("text", "דירה")
+
+        results.append({
+            "source": "yad2",
+            "listing_id": token,
+            "title": f"{prop_type} {address_str}".strip(),
+            "price": _to_int(item.get("price")),
+            "rooms": details.get("roomsCount"),
+            "neighborhood": neighborhood or city,
+            "address": address_str,
+            "description": "",
+            "floor": str(floor) if floor is not None else None,
+            "available_from": None,
+            "url": f"https://www.yad2.co.il/realestate/item/tel-aviv-area/{token}",
+        })
+    return results
 
 
 def _extract_next_data_items(html: str) -> list:
@@ -143,38 +214,37 @@ def _parse_api_items(items: list) -> list[dict]:
 
 
 def _parse_html_links(html: str) -> list[dict]:
-    """Fallback: extract listings from rendered HTML by scanning listing links."""
+    """Extract listings from rendered Yad2 HTML by scanning listing card links."""
     results = []
     seen: set[str] = set()
 
-    for m in re.finditer(
-        r'href="(https?://(?:www\.)?yad2\.co\.il/(?:realestate/item|item)/[^"?]+)"',
-        html,
-    ):
-        url = m.group(1).split("?")[0]
-        id_m = re.search(r'/(?:item/)?([A-Za-z0-9_-]{4,})$', url)
-        if not id_m:
-            continue
-        listing_id = id_m.group(1)
-        if listing_id in seen:
+    # Yad2 uses relative paths: /realestate/item/tel-aviv-area/ITEM_ID
+    for m in re.finditer(r'href="(/realestate/item/[^"?]+)', html):
+        path = m.group(1)
+        # Listing ID is the last path segment
+        listing_id = path.rstrip("/").split("/")[-1]
+        if not listing_id or listing_id in seen:
             continue
         seen.add(listing_id)
 
+        # Extract text from the surrounding card (~600 chars around the link)
         pos = m.start()
-        raw_html = html[max(0, pos - 500):pos + 300]
+        raw_html = html[max(0, pos - 400):pos + 400]
         text = " ".join(re.sub(r'<[^>]+>', ' ', raw_html).split())
 
         if not _matches_neighborhoods(text):
             continue
 
         price_m = (
-            re.search(r'(?:₪|ש[״"׳]?ח)\s*([\d,]+)', text)
-            or re.search(r'([\d,]+)\s*(?:₪|ש[״"׳]?ח)', text)
+            re.search(r'([\d,]+)\s*(?:₪|ש[״"׳]?ח)', text)
+            or re.search(r'(?:₪|ש[״"׳]?ח)\s*([\d,]+)', text)
         )
         price = 0
         if price_m:
             try:
-                price = int((price_m.group(1) or price_m.group(2) or "").replace(",", ""))
+                price = int((price_m.group(1) or "").replace(",", ""))
+                if not 1000 <= price <= 30000:
+                    price = 0
             except ValueError:
                 pass
 
@@ -189,15 +259,15 @@ def _parse_html_links(html: str) -> list[dict]:
         results.append({
             "source": "yad2",
             "listing_id": listing_id,
-            "title": text[:80],
+            "title": text[:100],
             "price": price,
             "rooms": rooms,
             "neighborhood": _extract_neighborhood(text),
             "address": "",
-            "description": text[:300],
+            "description": text[:350],
             "floor": None,
             "available_from": None,
-            "url": url,
+            "url": f"https://www.yad2.co.il{path}",
         })
 
     return results
