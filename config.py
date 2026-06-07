@@ -8,7 +8,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 OWNER_CHAT_ID = TELEGRAM_CHAT_ID  # admin-only commands (scan, pause, broadcast)
 
 SEARCH_CRITERIA = {
-    "rooms": 2,
+    "rooms": None,  # no default rooms filter — each user sets their own
     "min_price": 4500,         # סנן מודעות זולות מדי (חדרים בשיתוף)
     "max_price": 7200,
     "neighborhoods": [

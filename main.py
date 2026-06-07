@@ -166,7 +166,7 @@ async def main():
             c = config.SEARCH_CRITERIA
             await upsert_user(
                 owner_id,
-                rooms=c["rooms"],
+                rooms=None,
                 min_price=c.get("min_price", 0),
                 max_price=c["max_price"],
                 neighborhoods=c["neighborhoods"],

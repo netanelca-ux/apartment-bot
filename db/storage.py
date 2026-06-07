@@ -11,19 +11,21 @@ from config import DB_PATH
 _DEFAULT_NEIGHBORHOODS = ["פלורנטין", "צפון פלורנטין", "לב העיר", "מרכז העיר", "נווה צדק"]
 
 
-def _parse_rooms(value) -> list[float]:
-    """Rooms is stored as JSON array or legacy float. Always return a list."""
+def _parse_rooms(value) -> list[float] | None:
+    """Rooms is stored as JSON array, legacy float, or NULL (= no filter)."""
     if value is None:
-        return [2.0]
+        return None
     if isinstance(value, (int, float)):
         return [float(value)]
     try:
         parsed = json.loads(value)
+        if parsed is None:
+            return None
         if isinstance(parsed, list):
-            return [float(r) for r in parsed]
+            return [float(r) for r in parsed] or None
         return [float(parsed)]
     except (ValueError, TypeError):
-        return [2.0]
+        return None
 
 
 async def init_db():

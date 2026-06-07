@@ -50,6 +50,8 @@ def _rooms_keyboard(selected: list[str]) -> InlineKeyboardMarkup:
             check = "✅ " if r in selected else ""
             row.append(InlineKeyboardButton(f"{check}{r}", callback_data=f"rooms:{r}"))
         rows.append(row)
+    all_check = "✅ " if not selected else ""
+    rows.append([InlineKeyboardButton(f"{all_check}כל החדרים", callback_data="rooms:all")])
     rows.append([InlineKeyboardButton("➡️ סיים בחירה", callback_data="rooms:done")])
     return InlineKeyboardMarkup(rows)
 
@@ -74,8 +76,10 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     user = await get_user(chat_id)
 
     if user:
-        rooms_list = [str(int(r)) if r == int(r) else str(r) for r in user["rooms"]]
-        rooms_str = ", ".join(rooms_list)
+        if not user["rooms"]:
+            rooms_str = "כל החדרים"
+        else:
+            rooms_str = ", ".join(str(int(r)) if r == int(r) else str(r) for r in user["rooms"])
         nbhds = ", ".join(user["neighborhoods"])
         await update.message.reply_text(
             f"👋 ברוך השב!\n\n"
@@ -117,10 +121,9 @@ async def cmd_setrooms(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         )
         return ConversationHandler.END
 
-    current = [
-        r for r in ALL_ROOMS
-        if (4.0 if r == "4+" else float(r)) in user["rooms"]
-    ]
+    current = []
+    if user["rooms"]:
+        current = [r for r in ALL_ROOMS if (4.0 if r == "4+" else float(r)) in user["rooms"]]
     ctx.user_data["rooms"] = current
     ctx.user_data["_editing_rooms"] = True
 
@@ -164,33 +167,35 @@ async def cb_rooms(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
     value = query.data.split(":", 1)[1]
     selected: list[str] = ctx.user_data.setdefault("rooms", [])
 
+    if value == "all":
+        # Clear all specific selections — "כל החדרים"
+        selected.clear()
+        await query.edit_message_reply_markup(reply_markup=_rooms_keyboard(selected))
+        return ROOMS
+
     if value == "done":
-        if not selected:
-            await query.edit_message_reply_markup(
-                reply_markup=_rooms_keyboard(selected)
-            )
-            await query.answer("בחר לפחות מספר חדרים אחד", show_alert=True)
-            return ROOMS
+        rooms_floats = [4.0 if r == "4+" else float(r) for r in selected] if selected else None
+        rooms_display = _rooms_display(selected) if selected else "כל החדרים"
 
         editing = ctx.user_data.get("_editing_rooms", False)
         if editing:
-            rooms_floats = [4.0 if r == "4+" else float(r) for r in selected]
             await upsert_user(query.from_user.id, rooms=rooms_floats)
             await query.edit_message_text(
-                f"✅ *חדרים עודכנו!*\n\n🛏 {_rooms_display(selected)}",
+                f"✅ *חדרים עודכנו!*\n\n🛏 {rooms_display}",
                 parse_mode="Markdown",
             )
             ctx.user_data.clear()
             return ConversationHandler.END
 
+        ctx.user_data["rooms_floats"] = rooms_floats
         await query.edit_message_text(
-            f"✅ {_rooms_display(selected)} חדרים\n\n"
+            f"✅ {rooms_display}\n\n"
             f"*מה המחיר המקסימלי לחודש? (הקלד מספר בשקלים)*",
             parse_mode="Markdown",
         )
         return MAX_PRICE
 
-    # Toggle
+    # Toggle specific room count
     if value in selected:
         selected.remove(value)
     else:
@@ -274,9 +279,9 @@ async def cb_neighborhoods(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> in
                 parse_mode="Markdown",
             )
         else:
-            rooms_raw: list[str] = ctx.user_data.get("rooms", ["2"])
-            rooms_floats = [4.0 if r == "4+" else float(r) for r in rooms_raw]
-            rooms_display = _rooms_display(rooms_raw)
+            rooms_floats = ctx.user_data.get("rooms_floats")
+            rooms_raw: list[str] = ctx.user_data.get("rooms", [])
+            rooms_display = _rooms_display(rooms_raw) if rooms_raw else "כל החדרים"
             min_p = ctx.user_data.get("min_price", 0)
             max_p = ctx.user_data["max_price"]
             price_display = f"{min_p:,}–{max_p:,}" if min_p else f"עד {max_p:,}"

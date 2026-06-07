@@ -66,11 +66,14 @@ async def cmd_status(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     status_icon = "⏸" if not user["active"] else "✅"
     status_label = "מושהה" if not user["active"] else "פעיל"
-    rooms = int(user["rooms"]) if user["rooms"] == int(user["rooms"]) else user["rooms"]
+    if not user["rooms"]:
+        rooms_str = "כל החדרים"
+    else:
+        rooms_str = ", ".join(str(int(r)) if r == int(r) else str(r) for r in user["rooms"])
     neighborhoods = ", ".join(user["neighborhoods"])
     text = (
         f"*סטטוס: {status_icon} {status_label}*\n\n"
-        f"🛏 חדרים: `{rooms}`\n"
+        f"🛏 חדרים: `{rooms_str}`\n"
         f"💰 טווח מחיר: `{user['min_price']:,} – {user['max_price']:,} ₪`\n"
         f"📍 שכונות: {neighborhoods}"
     )
