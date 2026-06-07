@@ -192,16 +192,6 @@ async def main():
     tg_app.add_handler(CommandHandler("pause", commands.cmd_pause))
     tg_app.add_handler(CommandHandler("resume", commands.cmd_resume))
 
-    # Run initial scan
-    await scan_all()
-
-    if config.OWNER_CHAT_ID:
-        await send_status(
-            "🤖 בוט חיפוש דירות עלה לאוויר!\n"
-            "משתמשים חדשים יכולים להקליד /start כדי להגדיר חיפוש אישי.\n\n"
-            "שלח /help לרשימת הפקודות."
-        )
-
     scheduler = AsyncIOScheduler()
     scheduler.add_job(job_yad2, IntervalTrigger(seconds=config.YAD2_POLL_INTERVAL),
                       id="yad2", max_instances=1, coalesce=True)
@@ -217,6 +207,16 @@ async def main():
     await tg_app.start()
     await tg_app.updater.start_polling(drop_pending_updates=True)
     logger.info("📨 Telegram command polling started")
+
+    # Initial scan runs in the background so Telegram polling is ready immediately
+    asyncio.create_task(scan_all())
+
+    if config.OWNER_CHAT_ID:
+        await send_status(
+            "🤖 בוט חיפוש דירות עלה לאוויר!\n"
+            "משתמשים חדשים יכולים להקליד /start כדי להגדיר חיפוש אישי.\n\n"
+            "שלח /help לרשימת הפקודות."
+        )
 
     try:
         while True:
