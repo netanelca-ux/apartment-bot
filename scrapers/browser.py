@@ -50,8 +50,13 @@ async def get_context() -> BrowserContext:
             "--disable-dev-shm-usage",
             "--disable-blink-features=AutomationControlled",
             "--disable-gpu",
-            "--single-process",
-            "--memory-pressure-off",
+            "--no-zygote",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-sync",
+            "--disable-translate",
+            "--hide-scrollbars",
+            "--mute-audio",
         ],
     )
 
