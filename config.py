@@ -44,6 +44,7 @@ FACEBOOK_GROUPS = [
 
 FACEBOOK_COOKIES_FILE = "facebook_cookies.json"
 DB_PATH = "data/listings.db"
+SCRAPINGBEE_API_KEY = os.getenv("SCRAPINGBEE_API_KEY", "")
 
 # כמה זמן לחכות בין סריקות (בשניות)
 YAD2_POLL_INTERVAL = 15 * 60       # כל 15 דקות

@@ -18,7 +18,7 @@ from bot import commands
 from bot.onboarding import build_conversation_handler
 from db.storage import init_db, is_seen, mark_seen, get_active_users, get_user, upsert_user
 from scrapers.browser import close_browser, get_context
-from scrapers import yad2, fb_marketplace, fb_groups
+from scrapers import yad2, fb_marketplace, fb_groups, yad2_scrapingbee
 from scrapers.filters import passes_filters
 
 logging.basicConfig(
@@ -101,8 +101,11 @@ async def job_yad2():
         return
     logger.info("⏱  Starting Yad2 scan...")
     try:
-        ctx = await get_context()
-        listings = await yad2.fetch_listings(ctx)
+        if config.SCRAPINGBEE_API_KEY:
+            listings = await yad2_scrapingbee.fetch_listings(config.SCRAPINGBEE_API_KEY)
+        else:
+            ctx = await get_context()
+            listings = await yad2.fetch_listings(ctx)
         await process_listings(listings)
         logger.info(f"✅ Yad2 done — {len(listings)} found")
     except Exception as e:
