@@ -104,6 +104,8 @@ def _parse_api_items(items: list) -> list[dict]:
             "neighborhood": neighborhood or city,
             "address": street,
             "description": "",
+            "floor": item.get("floor"),
+            "available_from": item.get("enteranceDate") or item.get("availableFrom"),
             "url": f"https://www.yad2.co.il/item/{item_id}",
         })
     return results
