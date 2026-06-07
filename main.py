@@ -141,7 +141,6 @@ async def job_fb_groups():
 
 async def scan_all():
     """Run all scrapers once — called by the /scan Telegram command."""
-    await job_yad2()
     await job_fb_marketplace()
     await job_fb_groups()
 
@@ -193,15 +192,12 @@ async def main():
     tg_app.add_handler(CommandHandler("resume", commands.cmd_resume))
 
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(job_yad2, IntervalTrigger(seconds=config.YAD2_POLL_INTERVAL),
-                      id="yad2", max_instances=1, coalesce=True)
     scheduler.add_job(job_fb_marketplace, IntervalTrigger(seconds=config.FACEBOOK_POLL_INTERVAL),
                       id="fb_marketplace", max_instances=1, coalesce=True)
     scheduler.add_job(job_fb_groups, IntervalTrigger(seconds=config.FACEBOOK_POLL_INTERVAL),
                       id="fb_groups", max_instances=1, coalesce=True)
     scheduler.start()
-    logger.info(f"📅 Scheduler running — Yad2 every {config.YAD2_POLL_INTERVAL // 60}m, "
-                f"Facebook every {config.FACEBOOK_POLL_INTERVAL // 60}m")
+    logger.info(f"📅 Scheduler running — Facebook every {config.FACEBOOK_POLL_INTERVAL // 60}m")
 
     await tg_app.initialize()
     await tg_app.start()
