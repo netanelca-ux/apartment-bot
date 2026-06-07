@@ -16,7 +16,7 @@ import config
 from bot.notifier import send_listing, send_status
 from bot import commands
 from bot.onboarding import build_conversation_handler
-from db.storage import init_db, is_seen, mark_seen, get_active_users
+from db.storage import init_db, is_seen, mark_seen, get_active_users, get_user, upsert_user
 from scrapers.browser import close_browser, get_context
 from scrapers import yad2, fb_marketplace, fb_groups
 from scrapers.filters import passes_filters
@@ -155,6 +155,22 @@ async def main():
     await init_db()
 
     logger.info("🚀 Apartment bot starting...")
+
+    # Auto-register the owner so the bot works even if /start was never sent
+    # (or after a DB reset on Railway redeploy)
+    if config.OWNER_CHAT_ID:
+        owner_id = int(config.OWNER_CHAT_ID)
+        if not await get_user(owner_id):
+            c = config.SEARCH_CRITERIA
+            await upsert_user(
+                owner_id,
+                rooms=c["rooms"],
+                min_price=c.get("min_price", 0),
+                max_price=c["max_price"],
+                neighborhoods=c["neighborhoods"],
+                active=1,
+            )
+            logger.info(f"Auto-registered owner {owner_id} with default search criteria")
 
     commands.set_scan_callback(scan_all)
 
