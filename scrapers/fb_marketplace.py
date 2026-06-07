@@ -12,6 +12,7 @@ from typing import Optional
 from playwright.async_api import BrowserContext, Response
 
 from config import SEARCH_CRITERIA
+from scrapers.browser import reset_context
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,10 @@ async def fetch_listings(context: BrowserContext) -> list[dict]:
         logger.debug(f"Marketplace: intercepted {len(raw_listings)} listings via GraphQL")
 
     except Exception as e:
-        logger.error(f"Facebook Marketplace scraper error: {e}")
+        err = str(e)
+        logger.error(f"Facebook Marketplace scraper error: {err}")
+        if "crashed" in err.lower():
+            await reset_context()
     finally:
         await page.close()
 

@@ -17,8 +17,26 @@ _browser: Browser | None = None
 _context: BrowserContext | None = None
 
 
+def _load_storage_state() -> dict | None:
+    if os.path.exists(FACEBOOK_COOKIES_FILE):
+        with open(FACEBOOK_COOKIES_FILE) as f:
+            logger.info("Loaded saved Facebook session from file")
+            return json.load(f)
+    if os.environ.get("FACEBOOK_COOKIES"):
+        raw = base64.b64decode(os.environ["FACEBOOK_COOKIES"]).decode()
+        logger.info("Loaded saved Facebook session from environment variable")
+        return json.loads(raw)
+    logger.warning("No Facebook session found. Run tools/fb_login.py or set FACEBOOK_COOKIES env var.")
+    return None
+
+
 async def get_context() -> BrowserContext:
     global _playwright, _browser, _context
+
+    # If browser crashed, reset everything
+    if _browser is not None and not _browser.is_connected():
+        logger.warning("Browser disconnected — recreating...")
+        await close_browser()
 
     if _context is not None:
         return _context
@@ -31,11 +49,14 @@ async def get_context() -> BrowserContext:
             "--disable-setuid-sandbox",
             "--disable-dev-shm-usage",
             "--disable-blink-features=AutomationControlled",
+            "--disable-gpu",
+            "--single-process",
+            "--memory-pressure-off",
         ],
     )
 
     context_options: dict = {
-        "viewport": {"width": 1280, "height": 900},
+        "viewport": {"width": 1280, "height": 800},
         "user_agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -43,30 +64,30 @@ async def get_context() -> BrowserContext:
         ),
         "locale": "he-IL",
         "timezone_id": "Asia/Jerusalem",
+        "java_script_enabled": True,
     }
 
-    # Load Facebook session: prefer local file, fall back to FACEBOOK_COOKIES env var
-    if os.path.exists(FACEBOOK_COOKIES_FILE):
-        with open(FACEBOOK_COOKIES_FILE) as f:
-            context_options["storage_state"] = json.load(f)
-        logger.info("Loaded saved Facebook session from file")
-    elif os.environ.get("FACEBOOK_COOKIES"):
-        raw = base64.b64decode(os.environ["FACEBOOK_COOKIES"]).decode()
-        context_options["storage_state"] = json.loads(raw)
-        logger.info("Loaded saved Facebook session from environment variable")
-    else:
-        logger.warning(
-            f"No Facebook session found. Run tools/fb_login.py or set FACEBOOK_COOKIES env var."
-        )
+    storage = _load_storage_state()
+    if storage:
+        context_options["storage_state"] = storage
 
     _context = await _browser.new_context(**context_options)
-
-    # Mask automation fingerprint
-    await _context.add_init_script("""
-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-    """)
-
+    await _context.add_init_script(
+        "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
+    )
     return _context
+
+
+async def reset_context() -> BrowserContext:
+    """Force-close and recreate the browser context (call after a page crash)."""
+    global _context
+    if _context:
+        try:
+            await _context.close()
+        except Exception:
+            pass
+        _context = None
+    return await get_context()
 
 
 async def close_browser():

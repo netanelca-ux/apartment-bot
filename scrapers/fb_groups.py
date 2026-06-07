@@ -16,6 +16,7 @@ from typing import Optional
 from playwright.async_api import BrowserContext, Response
 
 from config import FACEBOOK_GROUPS, SEARCH_CRITERIA
+from scrapers.browser import reset_context
 
 logger = logging.getLogger(__name__)
 
@@ -32,21 +33,19 @@ SEARCH_KEYWORDS = ["מחפש", "מחפשת", "מישהו יודע", "האם מי
 
 
 async def fetch_listings(context: BrowserContext) -> list[dict]:
-    semaphore = asyncio.Semaphore(3)
-
-    async def scrape_with_limit(url: str) -> list[dict]:
-        async with semaphore:
-            try:
-                return await asyncio.wait_for(_scrape_group(context, url), timeout=90)
-            except asyncio.TimeoutError:
-                logger.warning(f"Group {url}: timed out after 90s, skipping")
-                return []
-            except Exception as e:
-                logger.error(f"Error scraping group {url}: {e}")
-                return []
-
-    results_nested = await asyncio.gather(*[scrape_with_limit(url) for url in FACEBOOK_GROUPS])
-    all_results = [item for sublist in results_nested for item in sublist]
+    all_results = []
+    for group_url in FACEBOOK_GROUPS:
+        try:
+            listings = await asyncio.wait_for(_scrape_group(context, group_url), timeout=90)
+            all_results.extend(listings)
+        except asyncio.TimeoutError:
+            logger.warning(f"Group {group_url}: timed out after 90s, skipping")
+            context = await reset_context()
+        except Exception as e:
+            err = str(e)
+            logger.error(f"Error scraping group {group_url}: {err}")
+            if "crashed" in err.lower():
+                context = await reset_context()
     logger.info(f"Facebook Groups: {len(all_results)} total relevant listings found")
     return all_results
 
