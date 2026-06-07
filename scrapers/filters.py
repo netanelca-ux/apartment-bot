@@ -86,6 +86,13 @@ def passes_filters(listing: dict, criteria: dict | None = None) -> bool:
     if max_price and price and price > max_price:
         return False
 
+    # Only filter by rooms if the listing has a room count and the user specified rooms
+    listing_rooms = listing.get("rooms")
+    criteria_rooms = c.get("rooms")  # list[float] or None
+    if listing_rooms and criteria_rooms:
+        if not any(abs(float(listing_rooms) - r) < 0.3 for r in criteria_rooms):
+            return False
+
     if c.get("no_broker", SEARCH_CRITERIA.get("no_broker")):
         if _is_broker_listing(listing):
             return False

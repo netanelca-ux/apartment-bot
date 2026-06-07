@@ -33,10 +33,11 @@ logger = logging.getLogger("main")
 # ── core job logic ────────────────────────────────────────────────────────────
 
 def _user_criteria(user: dict) -> dict:
+    # rooms is always a list[float] after db/storage._parse_rooms
     return {
         "min_price": user.get("min_price", 0),
         "max_price": user.get("max_price", config.SEARCH_CRITERIA["max_price"]),
-        "rooms": user.get("rooms", config.SEARCH_CRITERIA["rooms"]),
+        "rooms": user.get("rooms") or None,
         "neighborhoods": user.get("neighborhoods", config.SEARCH_CRITERIA["neighborhoods"]),
         "no_broker": config.SEARCH_CRITERIA.get("no_broker", True),
         "require_price": config.SEARCH_CRITERIA.get("require_price", True),
@@ -168,7 +169,6 @@ async def main():
     tg_app.add_handler(CommandHandler("scan", commands.cmd_scan))
     tg_app.add_handler(CommandHandler("setprice", commands.cmd_setprice))
     tg_app.add_handler(CommandHandler("setminprice", commands.cmd_setminprice))
-    tg_app.add_handler(CommandHandler("setrooms", commands.cmd_setrooms))
     tg_app.add_handler(CommandHandler("pause", commands.cmd_pause))
     tg_app.add_handler(CommandHandler("resume", commands.cmd_resume))
 

@@ -117,20 +117,6 @@ async def cmd_setminprice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> Non
         await update.message.reply_text("שימוש: `/setminprice 4500`", parse_mode="Markdown")
 
 
-async def cmd_setrooms(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
-    user = await _require_user(update)
-    if user is None:
-        return
-    try:
-        rooms = float(ctx.args[0].replace(",", "."))
-        if rooms <= 0:
-            raise ValueError("must be positive")
-        await upsert_user(update.effective_chat.id, rooms=rooms)
-        display = int(rooms) if rooms == int(rooms) else rooms
-        await update.message.reply_text(f"✅ מספר חדרים עודכן ל-*{display}*", parse_mode="Markdown")
-    except (IndexError, ValueError):
-        await update.message.reply_text("שימוש: `/setrooms 2` או `/setrooms 2.5`", parse_mode="Markdown")
-
 
 async def cmd_pause(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     user = await _require_user(update)
