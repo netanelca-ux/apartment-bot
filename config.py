@@ -19,7 +19,7 @@ SEARCH_CRITERIA = {
         "נווה צדק",
     ],
     "city": "תל אביב",
-    "require_price": True,    # סנן מודעות ללא מחיר
+    "require_price": False,   # מודעות ללא מחיר עוברות — המשתמש יראה בעצמו
     "no_broker": True,        # סנן מודעות של מתווכים
 }
 

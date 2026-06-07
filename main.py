@@ -75,7 +75,9 @@ async def process_listings(listings: list[dict]):
             if not passes_filters(listing, criteria):
                 continue
 
-            if not _listing_matches_neighborhood(listing, criteria["neighborhoods"]):
+            # Only apply neighborhood check when the listing has no neighborhood field
+            # (scrapers already filter by neighborhood; this catches edge cases)
+            if not listing.get("neighborhood") and not _listing_matches_neighborhood(listing, criteria["neighborhoods"]):
                 continue
 
             if await is_seen(chat_id, source, listing_id):

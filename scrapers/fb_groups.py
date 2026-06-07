@@ -194,8 +194,6 @@ async def _scrape_group(context: BrowserContext, group_url: str) -> list[dict]:
                 continue
 
             rooms = _extract_rooms(text)
-            if rooms and rooms != SEARCH_CRITERIA["rooms"]:
-                continue
 
             neighborhood = _extract_neighborhood(text)
             if not neighborhood and _has_other_neighborhood(text):
