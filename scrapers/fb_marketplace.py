@@ -16,8 +16,6 @@ logger = logging.getLogger(__name__)
 MARKETPLACE_URL = (
     "https://www.facebook.com/marketplace/108312912534207/rentals/"
     f"?maxPrice={SEARCH_CRITERIA['max_price']}"
-    f"&minBedrooms={SEARCH_CRITERIA['rooms']}"
-    f"&maxBedrooms={SEARCH_CRITERIA['rooms']}"
     "&sortBy=creation_time_descend"
 )
 
@@ -86,10 +84,10 @@ async def fetch_listings(context: BrowserContext) -> list[dict]:
                 "listing_id": listing_id,
                 "title": text.split("\n")[0][:100],
                 "price": price,
-                "rooms": SEARCH_CRITERIA["rooms"],
+                "rooms": _extract_rooms(text),
                 "neighborhood": _extract_neighborhood(text),
-                "address": "",
-                "description": text[:400],
+                "address": _extract_address(text),
+                "description": text[:500],
                 "url": href.split("?")[0],
             })
 
@@ -114,10 +112,39 @@ def _extract_neighborhood(text: str) -> str:
 
 
 def _extract_price(text: str) -> int:
-    match = re.search(r"([\d,]+)\s*(?:₪|ש[\"']?ח|שקל)", text)
-    if match:
-        return int(match.group(1).replace(",", ""))
+    patterns = [
+        r"([\d,]+)\s*(?:₪|ש[\"']?ח|שקל)",   # "7,200 ₪"
+        r"(?:₪|ש[\"']?ח)\s*([\d,]+)",          # "₪ 7,200"
+    ]
+    for pat in patterns:
+        m = re.search(pat, text)
+        if m:
+            val = int(m.group(1).replace(",", ""))
+            if 1000 <= val <= 30000:
+                return val
     return 0
+
+
+def _extract_rooms(text: str) -> float | None:
+    m = re.search(r"(\d[.,]?\d?)\s*חדר", text)
+    if m:
+        try:
+            return float(m.group(1).replace(",", "."))
+        except ValueError:
+            pass
+    return None
+
+
+def _extract_address(text: str) -> str:
+    """Extract street/address line — Marketplace cards often show it as a separate line."""
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    for line in lines:
+        # Skip price lines, room lines, and very short lines
+        if re.search(r"₪|שח|שקל|חדר|להשכרה|לשכירות", line):
+            continue
+        if re.search(r"[א-ת]{2,}", line) and len(line) > 5:
+            return line[:80]
+    return ""
 
 
 def _is_search_request(text: str) -> bool:

@@ -154,6 +154,16 @@ async def send_listing(listing: dict, chat_id: int):
         lines.append("*מאפיינים נוספים:*")
         lines.append(" | ".join(features))
 
+    # ── Description snippet ───────────────────────────────────────────────────
+    desc = (listing.get("description") or "").strip()
+    if desc:
+        clean = re.sub(r'[*_`\[\]\\]', '', desc)
+        first_lines = [l.strip() for l in clean.split("\n") if l.strip()][:4]
+        snippet = "\n".join(first_lines)[:280]
+        if snippet:
+            lines.append("")
+            lines.append(snippet)
+
     # ── Footer ────────────────────────────────────────────────────────────────
     lines.append("")
     lines.append(f"_מקור: {source_name}_")
