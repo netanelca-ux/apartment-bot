@@ -16,7 +16,7 @@ import config
 from bot.notifier import send_listing, send_status
 from bot import commands
 from bot.onboarding import build_conversation_handler
-from bot.settings_panel import build_settings_handler
+from bot.settings_panel import register_settings_handlers
 from db.storage import init_db, is_seen, mark_seen, get_active_users, get_user, upsert_user
 from scrapers.browser import close_browser, get_context
 from scrapers import yad2, fb_marketplace, fb_groups, yad2_scrapingbee
@@ -182,9 +182,9 @@ async def main():
 
     tg_app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
 
-    # ConversationHandlers (must be registered before standalone handlers)
+    # ConversationHandlers first, then standalone (order matters for text handlers)
     tg_app.add_handler(build_conversation_handler())
-    tg_app.add_handler(build_settings_handler())
+    register_settings_handlers(tg_app)
 
     # Standalone commands
     tg_app.add_handler(CommandHandler("help", commands.cmd_help))

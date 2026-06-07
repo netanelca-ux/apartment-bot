@@ -1,5 +1,6 @@
 """
 Unified settings panel — all settings in one interactive message.
+All callbacks are standalone (no ConversationHandler) so buttons always work.
 """
 from __future__ import annotations
 
@@ -7,10 +8,10 @@ import logging
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
+    Application,
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
-    ConversationHandler,
     MessageHandler,
     filters,
 )
@@ -18,8 +19,6 @@ from telegram.ext import (
 from db.storage import get_user, upsert_user
 
 logger = logging.getLogger(__name__)
-
-SP_HOME, SP_ROOMS, SP_NBHD, SP_PRICE_CUSTOM = range(4)
 
 ALL_ROOMS = ["1.5", "2", "2.5", "3", "3.5", "4+"]
 
@@ -151,30 +150,28 @@ async def _refresh_panel(query, chat_id: int) -> None:
 
 # ── entry points ───────────────────────────────────────────────────────────────
 
-async def cmd_settings(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+async def cmd_settings(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     user = await get_user(update.effective_chat.id)
     if user is None:
         await update.message.reply_text("אין לך עדיין פרופיל. שלח /start להגדרה.")
-        return ConversationHandler.END
+        return
     await update.message.reply_text(
         _panel_text(user),
         parse_mode="Markdown",
         reply_markup=_panel_keyboard(user),
     )
-    return SP_HOME
 
 
-async def cb_sp_open(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+async def cb_sp_open(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     """Opens settings panel from the 'sett:open' button in the onboarding message."""
     query = update.callback_query
     await query.answer()
     await _refresh_panel(query, query.from_user.id)
-    return SP_HOME
 
 
 # ── home actions ───────────────────────────────────────────────────────────────
 
-async def cb_sp_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+async def cb_sp_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     action = query.data.split(":", 1)[1]
@@ -191,7 +188,7 @@ async def cb_sp_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
             parse_mode="Markdown",
             reply_markup=_rooms_keyboard(current),
         )
-        return SP_ROOMS
+        return
 
     if action == "nbhd":
         current_canonical = set(user.get("neighborhoods", []))
@@ -205,7 +202,7 @@ async def cb_sp_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
             parse_mode="Markdown",
             reply_markup=_nbhd_keyboard(selected),
         )
-        return SP_NBHD
+        return
 
     if action == "price":
         current_max = user.get("max_price", 7_200)
@@ -214,7 +211,7 @@ async def cb_sp_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
             parse_mode="Markdown",
             reply_markup=_price_keyboard(current_max),
         )
-        return SP_HOME
+        return
 
     if action == "broker":
         current = user.get("broker_filter", "no_broker")
@@ -223,18 +220,16 @@ async def cb_sp_action(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
             parse_mode="Markdown",
             reply_markup=_broker_keyboard(current),
         )
-        return SP_HOME
+        return
 
     if action == "toggle":
         await upsert_user(chat_id, active=0 if user.get("active", 1) else 1)
         await _refresh_panel(query, chat_id)
 
-    return SP_HOME
-
 
 # ── rooms sub-menu ─────────────────────────────────────────────────────────────
 
-async def cb_sp_rooms(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+async def cb_sp_rooms(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     value = query.data.split(":", 1)[1]
@@ -242,13 +237,13 @@ async def cb_sp_rooms(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     if value == "back":
         await _refresh_panel(query, query.from_user.id)
-        return SP_HOME
+        return
 
     if value == "done":
         rooms_floats = [4.0 if r == "4+" else float(r) for r in selected] if selected else None
         await upsert_user(query.from_user.id, rooms=rooms_floats)
         await _refresh_panel(query, query.from_user.id)
-        return SP_HOME
+        return
 
     if value == "all":
         selected.clear()
@@ -258,12 +253,11 @@ async def cb_sp_rooms(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         selected.append(value)
 
     await query.edit_message_reply_markup(reply_markup=_rooms_keyboard(selected))
-    return SP_ROOMS
 
 
 # ── neighborhoods sub-menu ────────────────────────────────────────────────────
 
-async def cb_sp_nbhd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
+async def cb_sp_nbhd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     value = query.data.split(":", 1)[1]
@@ -271,12 +265,12 @@ async def cb_sp_nbhd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     if value == "back":
         await _refresh_panel(query, query.from_user.id)
-        return SP_HOME
+        return
 
     if value == "done":
         if not selected:
             await query.answer("בחר לפחות אזור אחד", show_alert=True)
-            return SP_NBHD
+            return
         canonical: list[str] = []
         for n in selected:
             for c in NEIGHBORHOOD_CANONICAL.get(n, [n]):
@@ -284,7 +278,7 @@ async def cb_sp_nbhd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
                     canonical.append(c)
         await upsert_user(query.from_user.id, neighborhoods=canonical)
         await _refresh_panel(query, query.from_user.id)
-        return SP_HOME
+        return
 
     if value in selected:
         selected.remove(value)
@@ -292,12 +286,11 @@ async def cb_sp_nbhd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> int:
         selected.append(value)
 
     await query.edit_message_reply_markup(reply_markup=_nbhd_keyboard(selected))
-    return SP_NBHD
 
 
 # ── price sub-menu ─────────────────────────────────────────────────────────────
 
-async def cb_sp_price(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+async def cb_sp_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     value = query.data.split(":", 1)[1]
@@ -305,24 +298,26 @@ async def cb_sp_price(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
 
     if value == "back":
         await _refresh_panel(query, chat_id)
-        return SP_HOME
+        return
 
     if value == "custom":
+        ctx.user_data["waiting_sp_price"] = True
         await query.edit_message_text(
             "💰 *הקלד מחיר מקסימלי לחודש:*\n\n_לדוגמה: 7800_",
             parse_mode="Markdown",
         )
-        return SP_PRICE_CUSTOM
+        return
 
     try:
         await upsert_user(chat_id, max_price=int(value))
         await _refresh_panel(query, chat_id)
     except ValueError:
         pass
-    return SP_HOME
 
 
-async def msg_sp_custom_price(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+async def msg_sp_custom_price(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    if not ctx.user_data.get("waiting_sp_price"):
+        return
     text = update.message.text.strip()
     try:
         price = int(text.replace(",", "").replace("₪", "").strip())
@@ -330,8 +325,9 @@ async def msg_sp_custom_price(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -
             raise ValueError
     except ValueError:
         await update.message.reply_text("אנא הקלד מספר תקין, למשל: 7800")
-        return SP_PRICE_CUSTOM
+        return
 
+    ctx.user_data.pop("waiting_sp_price", None)
     chat_id = update.effective_chat.id
     await upsert_user(chat_id, max_price=price)
     user = await get_user(chat_id)
@@ -340,12 +336,11 @@ async def msg_sp_custom_price(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -
         parse_mode="Markdown",
         reply_markup=_panel_keyboard(user),
     )
-    return SP_HOME
 
 
 # ── broker sub-menu ───────────────────────────────────────────────────────────
 
-async def cb_sp_broker(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
+async def cb_sp_broker(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     value = query.data.split(":", 1)[1]
@@ -355,44 +350,24 @@ async def cb_sp_broker(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> int:
         await upsert_user(chat_id, broker_filter=value)
 
     await _refresh_panel(query, chat_id)
-    return SP_HOME
 
 
-# ── build handler ──────────────────────────────────────────────────────────────
+# ── register all handlers ─────────────────────────────────────────────────────
 
-def build_settings_handler() -> ConversationHandler:
-    return ConversationHandler(
-        entry_points=[
-            CommandHandler("settings", cmd_settings),
-            CommandHandler("status", cmd_settings),
-            CommandHandler("setprice", cmd_settings),
-            CommandHandler("setminprice", cmd_settings),
-            CommandHandler("setrooms", cmd_settings),
-            CommandHandler("setneighborhoods", cmd_settings),
-            CommandHandler("setbroker", cmd_settings),
-            CallbackQueryHandler(cb_sp_open, pattern=r"^sett:open$"),
-        ],
-        states={
-            SP_HOME: [
-                CallbackQueryHandler(cb_sp_action, pattern=r"^sp:(rooms|nbhd|price|broker|toggle)$"),
-                CallbackQueryHandler(cb_sp_rooms, pattern=r"^sp_rooms:"),
-                CallbackQueryHandler(cb_sp_nbhd, pattern=r"^sp_nbhd:"),
-                CallbackQueryHandler(cb_sp_price, pattern=r"^sp_price:"),
-                CallbackQueryHandler(cb_sp_broker, pattern=r"^sp_broker:"),
-                CallbackQueryHandler(cb_sp_open, pattern=r"^sett:open$"),
-            ],
-            SP_ROOMS: [
-                CallbackQueryHandler(cb_sp_rooms, pattern=r"^sp_rooms:"),
-            ],
-            SP_NBHD: [
-                CallbackQueryHandler(cb_sp_nbhd, pattern=r"^sp_nbhd:"),
-            ],
-            SP_PRICE_CUSTOM: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, msg_sp_custom_price),
-            ],
-        },
-        fallbacks=[],
-        per_user=True,
-        per_chat=False,
-        name="settings_panel",
-    )
+def register_settings_handlers(app: Application) -> None:
+    app.add_handler(CommandHandler("settings", cmd_settings))
+    app.add_handler(CommandHandler("status", cmd_settings))
+    app.add_handler(CommandHandler("setprice", cmd_settings))
+    app.add_handler(CommandHandler("setminprice", cmd_settings))
+    app.add_handler(CommandHandler("setrooms", cmd_settings))
+    app.add_handler(CommandHandler("setneighborhoods", cmd_settings))
+    app.add_handler(CommandHandler("setbroker", cmd_settings))
+    app.add_handler(CallbackQueryHandler(cb_sp_open, pattern=r"^sett:open$"))
+    app.add_handler(CallbackQueryHandler(cb_sp_action, pattern=r"^sp:(rooms|nbhd|price|broker|toggle)$"))
+    app.add_handler(CallbackQueryHandler(cb_sp_rooms, pattern=r"^sp_rooms:"))
+    app.add_handler(CallbackQueryHandler(cb_sp_nbhd, pattern=r"^sp_nbhd:"))
+    app.add_handler(CallbackQueryHandler(cb_sp_price, pattern=r"^sp_price:"))
+    app.add_handler(CallbackQueryHandler(cb_sp_broker, pattern=r"^sp_broker:"))
+    # Text input for custom price — must be added AFTER ConversationHandlers
+    # so onboarding DESCRIBE state still catches free-text during onboarding
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg_sp_custom_price))
