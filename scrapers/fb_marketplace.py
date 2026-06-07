@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 """
-Facebook Marketplace scraper.
-Navigates to the Tel Aviv rentals page and extracts listings matching criteria.
-Requires a saved Facebook session (run tools/fb_login.py first).
+Facebook Marketplace scraper — GraphQL interception approach.
+Intercepts Facebook's internal GraphQL API calls instead of relying on DOM selectors.
 """
+import json
 import logging
 import re
+from typing import Optional
 
-from playwright.async_api import BrowserContext
+from playwright.async_api import BrowserContext, Response
 
 from config import SEARCH_CRITERIA
 
 logger = logging.getLogger(__name__)
 
-# Tel Aviv city ID on Facebook Marketplace
 MARKETPLACE_URL = (
     "https://www.facebook.com/marketplace/108312912534207/rentals/"
     f"?maxPrice={SEARCH_CRITERIA['max_price']}"
@@ -24,83 +24,184 @@ MARKETPLACE_URL = (
 
 async def fetch_listings(context: BrowserContext) -> list[dict]:
     page = await context.new_page()
-    results = []
+    raw_listings: dict[str, dict] = {}
+
+    async def on_response(response: Response):
+        if "graphql" not in response.url or response.status != 200:
+            return
+        try:
+            body = await response.text()
+            for line in body.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    parsed = json.loads(line)
+                    _extract_listings(parsed, raw_listings)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    page.on("response", on_response)
 
     try:
         await page.goto(MARKETPLACE_URL, wait_until="domcontentloaded", timeout=40_000)
 
-        # Wait for listing cards to appear
-        try:
-            await page.wait_for_selector('a[href*="/marketplace/item/"]', timeout=20_000)
-        except Exception:
-            logger.warning("Facebook Marketplace: no listing cards found (might need login)")
-            await page.screenshot(path="data/debug_marketplace.png")
+        if await page.query_selector('form[data-testid="royal_login_form"]'):
+            logger.warning("Facebook Marketplace: login required — run tools/fb_login.py")
             return []
 
-        # Scroll once to load more listings
-        await page.evaluate("window.scrollBy(0, 800)")
-        await page.wait_for_timeout(2000)
+        await page.wait_for_timeout(2500)
+        for _ in range(4):
+            await page.evaluate("window.scrollBy(0, 2000)")
+            await page.wait_for_timeout(1500)
 
-        cards = await page.evaluate("""
-            () => {
-                const anchors = document.querySelectorAll('a[href*="/marketplace/item/"]');
-                const seen = new Set();
-                return Array.from(anchors)
-                    .map(a => {
-                        const card = a.closest('[class]') || a;
-                        const text = card.innerText || a.innerText || '';
-                        const href = a.href;
-                        const id = href.match(/\\/marketplace\\/item\\/(\\d+)/)?.[1] || '';
-                        return { href, text, id };
-                    })
-                    .filter(({ id }) => {
-                        if (!id || seen.has(id)) return false;
-                        seen.add(id);
-                        return true;
-                    });
-            }
-        """)
-
-        for card in cards:
-            text = card.get("text", "")
-            href = card.get("href", "")
-            listing_id = card.get("id", "")
-
-            if not listing_id:
-                continue
-
-            # Filter by neighborhood keywords
-            if not _matches_neighborhoods(text):
-                continue
-
-            # Skip posts from people searching (not listing)
-            if _is_search_request(text):
-                continue
-
-            price = _extract_price(text)
-            if price and price > SEARCH_CRITERIA["max_price"]:
-                continue
-
-            results.append({
-                "source": "facebook_marketplace",
-                "listing_id": listing_id,
-                "title": text.split("\n")[0][:100],
-                "price": price,
-                "rooms": _extract_rooms(text),
-                "neighborhood": _extract_neighborhood(text),
-                "address": _extract_address(text),
-                "description": text[:500],
-                "url": href.split("?")[0],
-            })
+        logger.debug(f"Marketplace: intercepted {len(raw_listings)} listings via GraphQL")
 
     except Exception as e:
         logger.error(f"Facebook Marketplace scraper error: {e}")
     finally:
         await page.close()
 
+    results = []
+    for listing_id, data in raw_listings.items():
+        text = " ".join(filter(None, [
+            data.get("title", ""),
+            data.get("description", ""),
+            data.get("location", ""),
+        ]))
+
+        if not _matches_neighborhoods(text):
+            continue
+
+        price = data.get("price", 0)
+        if price and price > SEARCH_CRITERIA["max_price"]:
+            continue
+
+        results.append({
+            "source": "facebook_marketplace",
+            "listing_id": listing_id,
+            "title": data.get("title", "")[:100],
+            "price": price,
+            "rooms": _extract_rooms(text),
+            "neighborhood": _extract_neighborhood(text),
+            "address": data.get("location", ""),
+            "description": text[:500],
+            "url": f"https://www.facebook.com/marketplace/item/{listing_id}/",
+        })
+
     logger.info(f"Facebook Marketplace: {len(results)} relevant listings found")
     return results
 
+
+# ── GraphQL parsers ───────────────────────────────────────────────────────────
+
+def _extract_listings(data: dict, out: dict[str, dict]) -> None:
+    """Try all known Marketplace GraphQL response shapes."""
+    # Shape 1: marketplace_search.feed_units / feed_items
+    for key in ("feed_units", "feed_items"):
+        edges = _nested(data, "data", "marketplace_search", key, "edges")
+        if isinstance(edges, list):
+            for edge in edges:
+                _parse_edge(edge, out)
+
+    # Shape 2: viewer.marketplace_feed_stories
+    edges = _nested(data, "data", "viewer", "marketplace_feed_stories", "edges")
+    if isinstance(edges, list):
+        for edge in edges:
+            _parse_edge(edge, out)
+
+    # Shape 3: city.marketplace_feed
+    edges = _nested(data, "data", "city", "marketplace_feed", "edges")
+    if isinstance(edges, list):
+        for edge in edges:
+            _parse_edge(edge, out)
+
+    # Shape 4: top-level edges array
+    edges = _nested(data, "data", "edges")
+    if isinstance(edges, list):
+        for edge in edges:
+            _parse_edge(edge, out)
+
+
+def _parse_edge(edge: dict, out: dict[str, dict]) -> None:
+    if not isinstance(edge, dict):
+        return
+    node = edge.get("node", {})
+    if not isinstance(node, dict):
+        return
+
+    listing = node.get("listing") or node
+    if not isinstance(listing, dict):
+        return
+
+    listing_id = str(listing.get("id", "")).strip()
+    if not listing_id:
+        return
+
+    if listing_id in out:
+        return
+
+    title = (
+        listing.get("custom_title")
+        or listing.get("name")
+        or listing.get("marketplace_listing_title")
+        or ""
+    )
+
+    price = _parse_price(listing)
+    location = _parse_location(listing)
+    description = _nested(listing, "description", "text") or ""
+
+    out[listing_id] = {
+        "title": title,
+        "price": price,
+        "location": location,
+        "description": description,
+    }
+
+
+def _parse_price(listing: dict) -> int:
+    for path in [
+        ("listing_price", "amount"),
+        ("price", "amount"),
+        ("formatted_price",),
+    ]:
+        val = _nested(listing, *path)
+        if val is not None:
+            try:
+                return int(float(str(val).replace(",", "").replace("₪", "").strip()))
+            except (ValueError, TypeError):
+                pass
+    return 0
+
+
+def _parse_location(listing: dict) -> str:
+    rg = _nested(listing, "location", "reverse_geocode")
+    if isinstance(rg, dict):
+        parts = [
+            _nested(rg, "neighborhood") or "",
+            _nested(rg, "city") or (_nested(rg, "city_page", "display_name") or ""),
+        ]
+        return " ".join(p for p in parts if p).strip()
+
+    loc = listing.get("location")
+    if isinstance(loc, dict):
+        return loc.get("city", "") or ""
+
+    return ""
+
+
+def _nested(obj: dict, *keys):
+    for k in keys:
+        if not isinstance(obj, dict):
+            return None
+        obj = obj.get(k)
+    return obj
+
+
+# ── text helpers ──────────────────────────────────────────────────────────────
 
 def _matches_neighborhoods(text: str) -> bool:
     return any(n in text for n in SEARCH_CRITERIA["neighborhoods"])
@@ -113,21 +214,7 @@ def _extract_neighborhood(text: str) -> str:
     return ""
 
 
-def _extract_price(text: str) -> int:
-    patterns = [
-        r"([\d,]+)\s*(?:₪|ש[\"']?ח|שקל)",   # "7,200 ₪"
-        r"(?:₪|ש[\"']?ח)\s*([\d,]+)",          # "₪ 7,200"
-    ]
-    for pat in patterns:
-        m = re.search(pat, text)
-        if m:
-            val = int(m.group(1).replace(",", ""))
-            if 1000 <= val <= 30000:
-                return val
-    return 0
-
-
-def _extract_rooms(text: str) -> float | None:
+def _extract_rooms(text: str) -> Optional[float]:
     m = re.search(r"(\d[.,]?\d?)\s*חדר", text)
     if m:
         try:
@@ -135,20 +222,3 @@ def _extract_rooms(text: str) -> float | None:
         except ValueError:
             pass
     return None
-
-
-def _extract_address(text: str) -> str:
-    """Extract street/address line — Marketplace cards often show it as a separate line."""
-    lines = [l.strip() for l in text.split("\n") if l.strip()]
-    for line in lines:
-        # Skip price lines, room lines, and very short lines
-        if re.search(r"₪|שח|שקל|חדר|להשכרה|לשכירות", line):
-            continue
-        if re.search(r"[א-ת]{2,}", line) and len(line) > 5:
-            return line[:80]
-    return ""
-
-
-def _is_search_request(text: str) -> bool:
-    request_keywords = ["מחפש", "מחפשת", "רצוי", "ישנה הצעה", "מישהו מכיר"]
-    return any(kw in text for kw in request_keywords)
