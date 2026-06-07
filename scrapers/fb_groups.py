@@ -37,7 +37,10 @@ async def fetch_listings(context: BrowserContext) -> list[dict]:
     async def scrape_with_limit(url: str) -> list[dict]:
         async with semaphore:
             try:
-                return await _scrape_group(context, url)
+                return await asyncio.wait_for(_scrape_group(context, url), timeout=90)
+            except asyncio.TimeoutError:
+                logger.warning(f"Group {url}: timed out after 90s, skipping")
+                return []
             except Exception as e:
                 logger.error(f"Error scraping group {url}: {e}")
                 return []
