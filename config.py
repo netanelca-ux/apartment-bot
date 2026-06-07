@@ -49,4 +49,4 @@ SCRAPINGBEE_API_KEY = os.getenv("SCRAPINGBEE_API_KEY", "")
 
 # כמה זמן לחכות בין סריקות (בשניות)
 YAD2_POLL_INTERVAL = 15 * 60       # כל 15 דקות
-FACEBOOK_POLL_INTERVAL = 30 * 60   # כל 30 דקות
+FACEBOOK_POLL_INTERVAL = 10 * 60   # כל 10 דקות

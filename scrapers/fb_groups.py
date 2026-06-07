@@ -5,6 +5,7 @@ Facebook Groups scraper — GraphQL interception approach.
 Intercepts Facebook's internal GraphQL API calls to extract post data reliably,
 instead of relying on DOM selectors that break frequently.
 """
+import asyncio
 import base64
 import json
 import logging
@@ -31,13 +32,18 @@ SEARCH_KEYWORDS = ["מחפש", "מחפשת", "מישהו יודע", "האם מי
 
 
 async def fetch_listings(context: BrowserContext) -> list[dict]:
-    all_results = []
-    for group_url in FACEBOOK_GROUPS:
-        try:
-            listings = await _scrape_group(context, group_url)
-            all_results.extend(listings)
-        except Exception as e:
-            logger.error(f"Error scraping group {group_url}: {e}")
+    semaphore = asyncio.Semaphore(3)
+
+    async def scrape_with_limit(url: str) -> list[dict]:
+        async with semaphore:
+            try:
+                return await _scrape_group(context, url)
+            except Exception as e:
+                logger.error(f"Error scraping group {url}: {e}")
+                return []
+
+    results_nested = await asyncio.gather(*[scrape_with_limit(url) for url in FACEBOOK_GROUPS])
+    all_results = [item for sublist in results_nested for item in sublist]
     logger.info(f"Facebook Groups: {len(all_results)} total relevant listings found")
     return all_results
 
