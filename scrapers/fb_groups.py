@@ -44,7 +44,7 @@ async def fetch_listings(context: BrowserContext) -> list[dict]:
         except Exception as e:
             err = str(e)
             logger.error(f"Error scraping group {group_url}: {err}")
-            if "crashed" in err.lower():
+            if any(w in err.lower() for w in ("crashed", "connection closed", "closed while", "target closed")):
                 context = await reset_context()
     logger.info(f"Facebook Groups: {len(all_results)} total relevant listings found")
     return all_results

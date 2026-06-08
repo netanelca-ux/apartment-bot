@@ -124,6 +124,8 @@ async def job_fb_marketplace():
         logger.info(f"✅ FB Marketplace done — {len(listings)} found")
     except Exception as e:
         logger.error(f"FB Marketplace job failed: {e}")
+    finally:
+        await close_browser()
 
 
 async def job_fb_groups():
@@ -137,6 +139,8 @@ async def job_fb_groups():
         logger.info(f"✅ FB Groups done — {len(listings)} found")
     except Exception as e:
         logger.error(f"FB Groups job failed: {e}")
+    finally:
+        await close_browser()
 
 
 async def scan_all():

@@ -63,7 +63,7 @@ async def fetch_listings(context: BrowserContext) -> list[dict]:
     except Exception as e:
         err = str(e)
         logger.error(f"Facebook Marketplace scraper error: {err}")
-        if "crashed" in err.lower():
+        if any(w in err.lower() for w in ("crashed", "connection closed", "closed while", "target closed")):
             await reset_context()
     finally:
         await page.close()
