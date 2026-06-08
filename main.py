@@ -18,7 +18,7 @@ from bot import commands
 from bot.onboarding import build_conversation_handler
 from bot.settings_panel import register_settings_handlers
 from db.storage import init_db, is_seen, mark_seen, get_active_users, get_user, upsert_user
-from scrapers import fb_marketplace, fb_groups
+from scrapers import fb_marketplace, fb_groups, yad2
 from scrapers.fb_session import check_session
 from scrapers.filters import passes_filters
 
@@ -97,6 +97,18 @@ async def process_listings(listings: list[dict]):
 
 # ── scheduled jobs ────────────────────────────────────────────────────────────
 
+async def job_yad2():
+    if commands.is_paused():
+        return
+    logger.info("⏱  Starting Yad2 scan...")
+    try:
+        listings = await yad2.fetch_listings()
+        await process_listings(listings)
+        logger.info(f"✅ Yad2 done — {len(listings)} found")
+    except Exception as e:
+        logger.error(f"Yad2 job failed: {e}")
+
+
 async def job_fb_marketplace():
     if commands.is_paused():
         return
@@ -138,6 +150,7 @@ async def job_keepalive():
 
 async def scan_all():
     """Run all scrapers once — called by the /scan Telegram command."""
+    await job_yad2()
     await job_fb_marketplace()
     await job_fb_groups()
 
@@ -189,6 +202,8 @@ async def main():
     tg_app.add_handler(CommandHandler("resume", commands.cmd_resume))
 
     scheduler = AsyncIOScheduler()
+    scheduler.add_job(job_yad2, IntervalTrigger(seconds=config.YAD2_POLL_INTERVAL),
+                      id="yad2", max_instances=1, coalesce=True)
     scheduler.add_job(job_fb_marketplace, IntervalTrigger(seconds=config.FACEBOOK_POLL_INTERVAL),
                       id="fb_marketplace", max_instances=1, coalesce=True)
     scheduler.add_job(job_fb_groups, IntervalTrigger(seconds=config.FACEBOOK_POLL_INTERVAL),
