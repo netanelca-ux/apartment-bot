@@ -2,4 +2,5 @@ python-telegram-bot>=21.0,<22.0
 apscheduler>=3.10,<4.0
 python-dotenv>=1.0
 aiosqlite>=0.20
-httpx[http2]>=0.27
+httpx>=0.27
+curl-cffi>=0.7

@@ -9,27 +9,18 @@ import logging
 import re
 from typing import Optional
 
-import httpx
+from curl_cffi.requests import AsyncSession
 
 from config import SEARCH_CRITERIA
 
 logger = logging.getLogger(__name__)
 
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8",
-    "Accept-Encoding": "gzip, deflate, br",
     "Sec-Fetch-Dest": "document",
     "Sec-Fetch-Mode": "navigate",
     "Sec-Fetch-Site": "none",
-    "Sec-CH-UA": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-    "Sec-CH-UA-Mobile": "?0",
-    "Sec-CH-UA-Platform": '"macOS"',
 }
 
 BASE_URL = (
@@ -47,12 +38,7 @@ MAX_PAGES = 3
 async def fetch_listings(_ctx=None) -> list[dict]:
     results: list[dict] = []
     try:
-        async with httpx.AsyncClient(
-            headers=HEADERS,
-            follow_redirects=True,
-            timeout=30,
-            http2=True,
-        ) as client:
+        async with AsyncSession(impersonate="chrome124", headers=HEADERS) as client:
             for page in range(1, MAX_PAGES + 1):
                 url = BASE_URL if page == 1 else f"{BASE_URL}&page={page}"
                 page_results = await _fetch_page(client, url, page)
@@ -66,7 +52,7 @@ async def fetch_listings(_ctx=None) -> list[dict]:
     return results
 
 
-async def _fetch_page(client: httpx.AsyncClient, url: str, page: int) -> list[dict]:
+async def _fetch_page(client: AsyncSession, url: str, page: int) -> list[dict]:
     try:
         resp = await client.get(url)
     except Exception as e:
