@@ -19,6 +19,7 @@ from bot.onboarding import build_conversation_handler
 from bot.settings_panel import register_settings_handlers
 from db.storage import init_db, is_seen, mark_seen, get_active_users, get_user, upsert_user
 from scrapers import fb_marketplace, fb_groups
+from scrapers.fb_session import check_session
 from scrapers.filters import passes_filters
 
 logging.basicConfig(
@@ -120,6 +121,21 @@ async def job_fb_groups():
         logger.error(f"FB Groups job failed: {e}")
 
 
+async def job_keepalive():
+    valid = await check_session()
+    if valid:
+        logger.info("✅ Facebook session alive")
+    else:
+        logger.warning("❌ Facebook session expired — notifying owner")
+        if config.OWNER_CHAT_ID:
+            await send_status(
+                "⚠️ *session של פייסבוק פג\\!*\n\n"
+                "הבוט לא מצליח לסרוק דירות\\.\n"
+                "תריץ במחשב שלך:\n"
+                "`python3 tools/fb_login.py`"
+            )
+
+
 async def scan_all():
     """Run all scrapers once — called by the /scan Telegram command."""
     await job_fb_marketplace()
@@ -177,15 +193,18 @@ async def main():
                       id="fb_marketplace", max_instances=1, coalesce=True)
     scheduler.add_job(job_fb_groups, IntervalTrigger(seconds=config.FACEBOOK_POLL_INTERVAL),
                       id="fb_groups", max_instances=1, coalesce=True)
+    scheduler.add_job(job_keepalive, IntervalTrigger(hours=2),
+                      id="fb_keepalive", max_instances=1, coalesce=True)
     scheduler.start()
-    logger.info(f"📅 Scheduler running — Facebook every {config.FACEBOOK_POLL_INTERVAL // 60}m")
+    logger.info(f"📅 Scheduler running — Facebook every {config.FACEBOOK_POLL_INTERVAL // 60}m, keepalive every 2h")
 
     await tg_app.initialize()
     await tg_app.start()
     await tg_app.updater.start_polling(drop_pending_updates=True)
     logger.info("📨 Telegram command polling started")
 
-    # Initial scan runs in the background so Telegram polling is ready immediately
+    # Check session validity immediately on startup, then start scanning
+    asyncio.create_task(job_keepalive())
     asyncio.create_task(scan_all())
 
     if config.OWNER_CHAT_ID:

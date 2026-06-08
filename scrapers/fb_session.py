@@ -47,3 +47,21 @@ def make_client(cookies: dict[str, str]) -> httpx.AsyncClient:
         follow_redirects=True,
         timeout=30,
     )
+
+
+async def check_session() -> bool:
+    """Ping mbasic.facebook.com and return True if the session is still valid."""
+    cookies = get_cookies()
+    if not cookies:
+        return False
+    try:
+        async with make_client(cookies) as client:
+            resp = await client.get("https://mbasic.facebook.com/")
+            expired = (
+                "login" in str(resp.url).lower()
+                or 'id="login_form"' in resp.text
+            )
+            return not expired
+    except Exception as e:
+        logger.warning(f"Session check failed: {e}")
+        return False
