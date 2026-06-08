@@ -63,10 +63,16 @@ async def cmd_scan(update: Update, _ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if _paused:
         await update.message.reply_text("⏸ הבוט מושהה כלל-מערכתית. שלח /resume כדי להמשיך.")
         return
-    await update.message.reply_text("🔍 מתחיל סריקה בכל המקורות...")
-    if _scan_all_callback:
+    if not _scan_all_callback:
+        return
+    await update.message.reply_text("🔍 סריקה התחילה — אשלח תוצאות כשתסתיים.")
+
+    async def _run():
         await _scan_all_callback()
         await update.message.reply_text("✅ סריקה הסתיימה.")
+
+    import asyncio
+    asyncio.create_task(_run())
 
 
 
