@@ -18,8 +18,7 @@ from bot import commands
 from bot.onboarding import build_conversation_handler
 from bot.settings_panel import register_settings_handlers
 from db.storage import init_db, is_seen, mark_seen, get_active_users, get_user, upsert_user
-from scrapers.browser import close_browser, get_context
-from scrapers import yad2, fb_marketplace, fb_groups, yad2_scrapingbee
+from scrapers import fb_marketplace, fb_groups
 from scrapers.filters import passes_filters
 
 logging.basicConfig(
@@ -97,35 +96,16 @@ async def process_listings(listings: list[dict]):
 
 # ── scheduled jobs ────────────────────────────────────────────────────────────
 
-async def job_yad2():
-    if commands.is_paused():
-        return
-    logger.info("⏱  Starting Yad2 scan...")
-    try:
-        if config.SCRAPINGBEE_API_KEY:
-            listings = await yad2_scrapingbee.fetch_listings(config.SCRAPINGBEE_API_KEY)
-        else:
-            ctx = await get_context()
-            listings = await yad2.fetch_listings(ctx)
-        await process_listings(listings)
-        logger.info(f"✅ Yad2 done — {len(listings)} found")
-    except Exception as e:
-        logger.error(f"Yad2 job failed: {e}")
-
-
 async def job_fb_marketplace():
     if commands.is_paused():
         return
     logger.info("⏱  Starting Facebook Marketplace scan...")
     try:
-        ctx = await get_context()
-        listings = await fb_marketplace.fetch_listings(ctx)
+        listings = await fb_marketplace.fetch_listings()
         await process_listings(listings)
         logger.info(f"✅ FB Marketplace done — {len(listings)} found")
     except Exception as e:
         logger.error(f"FB Marketplace job failed: {e}")
-    finally:
-        await close_browser()
 
 
 async def job_fb_groups():
@@ -133,14 +113,11 @@ async def job_fb_groups():
         return
     logger.info("⏱  Starting Facebook Groups scan...")
     try:
-        ctx = await get_context()
-        listings = await fb_groups.fetch_listings(ctx)
+        listings = await fb_groups.fetch_listings()
         await process_listings(listings)
         logger.info(f"✅ FB Groups done — {len(listings)} found")
     except Exception as e:
         logger.error(f"FB Groups job failed: {e}")
-    finally:
-        await close_browser()
 
 
 async def scan_all():
@@ -228,7 +205,6 @@ async def main():
         await tg_app.updater.stop()
         await tg_app.stop()
         await tg_app.shutdown()
-        await close_browser()
 
 
 if __name__ == "__main__":
