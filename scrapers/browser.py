@@ -1,108 +1,69 @@
-"""Shared Playwright browser context for all scrapers."""
 from __future__ import annotations
 
-import base64
-import json
-import logging
-import os
+from contextlib import asynccontextmanager
+from playwright.async_api import async_playwright
 
-from playwright.async_api import async_playwright, Browser, BrowserContext, Playwright
+LAUNCH_ARGS = [
+    "--no-sandbox",
+    "--disable-gpu",
+    "--no-zygote",
+    "--disable-dev-shm-usage",
+    "--disable-extensions",
+    "--disable-sync",
+    "--no-first-run",
+    "--disable-background-networking",
+    "--disable-breakpad",
+    "--disable-component-update",
+    "--disable-domain-reliability",
+    "--mute-audio",
+    "--disable-blink-features=AutomationControlled",
+]
 
-from config import FACEBOOK_COOKIES_FILE
+_BLOCKED_TYPES = frozenset(["image", "media", "font"])
 
-logger = logging.getLogger(__name__)
-
-_playwright: Playwright | None = None
-_browser: Browser | None = None
-_context: BrowserContext | None = None
-
-
-def _load_storage_state() -> dict | None:
-    if os.path.exists(FACEBOOK_COOKIES_FILE):
-        with open(FACEBOOK_COOKIES_FILE) as f:
-            logger.info("Loaded saved Facebook session from file")
-            return json.load(f)
-    if os.environ.get("FACEBOOK_COOKIES"):
-        raw = base64.b64decode(os.environ["FACEBOOK_COOKIES"]).decode()
-        logger.info("Loaded saved Facebook session from environment variable")
-        return json.loads(raw)
-    logger.warning("No Facebook session found. Run tools/fb_login.py or set FACEBOOK_COOKIES env var.")
-    return None
-
-
-async def get_context() -> BrowserContext:
-    global _playwright, _browser, _context
-
-    # If browser crashed, reset everything
-    if _browser is not None and not _browser.is_connected():
-        logger.warning("Browser disconnected — recreating...")
-        await close_browser()
-
-    if _context is not None:
-        return _context
-
-    _playwright = await async_playwright().start()
-    _browser = await _playwright.chromium.launch(
-        headless=True,
-        args=[
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-blink-features=AutomationControlled",
-            "--disable-gpu",
-            "--no-zygote",
-            "--disable-extensions",
-            "--disable-background-networking",
-            "--disable-sync",
-            "--disable-translate",
-            "--hide-scrollbars",
-            "--mute-audio",
-        ],
-    )
-
-    context_options: dict = {
-        "viewport": {"width": 1280, "height": 800},
-        "user_agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "locale": "he-IL",
-        "timezone_id": "Asia/Jerusalem",
-        "java_script_enabled": True,
-    }
-
-    storage = _load_storage_state()
-    if storage:
-        context_options["storage_state"] = storage
-
-    _context = await _browser.new_context(**context_options)
-    await _context.add_init_script(
-        "Object.defineProperty(navigator, 'webdriver', { get: () => undefined });"
-    )
-    return _context
+_STEALTH_SCRIPT = (
+    "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+    "Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]});"
+    "Object.defineProperty(navigator, 'languages', {get: () => ['he-IL','he','en-US','en']});"
+)
 
 
-async def reset_context() -> BrowserContext:
-    """Force-close and recreate the browser context (call after a page crash)."""
-    global _context
-    if _context:
+@asynccontextmanager
+async def managed_browser():
+    """Open a Chromium browser for the duration of a scan, then close it."""
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=True, args=LAUNCH_ARGS)
         try:
-            await _context.close()
-        except Exception:
-            pass
-        _context = None
-    return await get_context()
+            yield browser
+        finally:
+            await browser.close()
 
 
-async def close_browser():
-    global _playwright, _browser, _context
-    if _context:
-        await _context.close()
-        _context = None
-    if _browser:
-        await _browser.close()
-        _browser = None
-    if _playwright:
-        await _playwright.stop()
-        _playwright = None
+async def new_page(browser, *, cookies: list[dict] | None = None):
+    """Create a new context+page with stealth patches and resource blocking.
+
+    Caller must call ``await page.context.close()`` when finished.
+    """
+    context = await browser.new_context(
+        user_agent=(
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+        locale="he-IL",
+        timezone_id="Asia/Jerusalem",
+        extra_http_headers={"Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8"},
+    )
+    await context.add_init_script(_STEALTH_SCRIPT)
+    if cookies:
+        await context.add_cookies(cookies)
+
+    page = await context.new_page()
+
+    async def _route(route):
+        if route.request.resource_type in _BLOCKED_TYPES:
+            await route.abort()
+        else:
+            await route.continue_()
+
+    await page.route("**/*", _route)
+    return page

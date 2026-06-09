@@ -1,16 +1,11 @@
 from __future__ import annotations
 
-"""
-Facebook Groups scraper — lightweight HTTP approach via mbasic.facebook.com.
-No browser required. Uses session cookies to fetch the simple HTML version of Facebook.
-"""
-import asyncio
 import logging
 import re
 from typing import Optional
 
 from config import FACEBOOK_GROUPS, SEARCH_CRITERIA
-from scrapers.fb_session import get_cookies, make_client
+from scrapers.fb_session import get_cookies
 
 logger = logging.getLogger(__name__)
 
@@ -29,122 +24,110 @@ OTHER_NEIGHBORHOODS = [
     "פתח תקווה", "הרצליה", "רעננה",
 ]
 
+# JS snippet to extract posts from a Facebook group page
+_EXTRACT_JS = """
+() => {
+    const posts = [];
+    document.querySelectorAll('[role="article"]').forEach(el => {
+        let postHref = '';
+        for (const a of el.querySelectorAll('a[href]')) {
+            const h = a.href;
+            if (h.includes('/posts/') || h.includes('/permalink/') || h.includes('?id=')) {
+                postHref = h;
+                break;
+            }
+        }
+        posts.push({text: el.innerText, href: postHref});
+    });
+    return posts;
+}
+"""
 
-async def fetch_listings(_ctx=None) -> list[dict]:
+
+async def fetch_listings(browser=None) -> list[dict]:
+    from scrapers.browser import managed_browser, new_page as _new_page
+
     cookies = get_cookies()
     if not cookies:
         logger.warning("No Facebook cookies — skipping groups scan")
         return []
 
-    all_results = []
-    async with make_client(cookies) as client:
-        for group_url in FACEBOOK_GROUPS:
-            try:
-                listings = await asyncio.wait_for(
-                    _scrape_group(client, group_url), timeout=30
-                )
-                all_results.extend(listings)
-            except asyncio.TimeoutError:
-                logger.warning(f"Group {group_url}: timed out, skipping")
-            except Exception as e:
-                logger.error(f"Error scraping group {group_url}: {e}")
+    fb_cookies = [
+        {"name": k, "value": v, "domain": ".facebook.com", "path": "/"}
+        for k, v in cookies.items()
+    ]
 
-    logger.info(f"Facebook Groups: {len(all_results)} total relevant listings found")
-    return all_results
+    async def _run(b):
+        page = await _new_page(b, cookies=fb_cookies)
+        all_results = []
+        try:
+            for group_url in FACEBOOK_GROUPS:
+                m = re.search(r"/groups/(\w+)", group_url)
+                if not m:
+                    continue
+                group_id = m.group(1)
+                try:
+                    results = await _scrape_group(page, group_id)
+                    all_results.extend(results)
+                except Exception as e:
+                    logger.error(f"Error scraping group {group_id}: {e}")
+        finally:
+            await page.context.close()
+        logger.info(f"Facebook Groups: {len(all_results)} total relevant listings found")
+        return all_results
+
+    if browser is not None:
+        return await _run(browser)
+    async with managed_browser() as b:
+        return await _run(b)
 
 
-async def _scrape_group(client, group_url: str) -> list[dict]:
-    m = re.search(r"/groups/(\w+)", group_url)
-    if not m:
+async def _scrape_group(page, group_id: str) -> list[dict]:
+    url = f"https://www.facebook.com/groups/{group_id}?sorting_setting=CHRONOLOGICAL"
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+    except Exception as e:
+        logger.warning(f"Group {group_id}: navigation failed: {e}")
         return []
-    group_id = m.group(1)
 
-    mbasic_url = f"https://mbasic.facebook.com/groups/{group_id}"
-    resp = await client.get(mbasic_url)
-
-    if resp.status_code != 200:
-        logger.warning(f"Group {group_id}: HTTP {resp.status_code}")
+    current_url = page.url
+    if "login" in current_url or "checkpoint" in current_url:
+        logger.warning(f"Group {group_id}: session issue — redirected to {current_url}")
         return []
 
-    if "login" in str(resp.url).lower() or 'id="login_form"' in resp.text:
-        logger.warning(f"Group {group_id}: redirected to login — cookies expired")
+    # Wait for posts to render
+    try:
+        await page.wait_for_selector('[role="article"]', timeout=8_000)
+    except Exception:
+        pass
+
+    try:
+        posts_data: list[dict] = await page.evaluate(_EXTRACT_JS)
+    except Exception as e:
+        logger.warning(f"Group {group_id}: JS evaluation failed: {e}")
         return []
-
-    posts = _parse_mbasic_posts(resp.text, group_id)
-    logger.info(f"Group {group_url}: {len(posts)} relevant posts")
-    return posts
-
-
-def _parse_mbasic_posts(html: str, group_id: str) -> list[dict]:
-    from html.parser import HTMLParser
-
-    class _TextExtractor(HTMLParser):
-        def __init__(self):
-            super().__init__()
-            self.texts: list[str] = []
-            self._current: list[str] = []
-            self._depth = 0
-
-        def handle_starttag(self, tag, attrs):
-            self._depth += 1
-
-        def handle_endtag(self, tag):
-            self._depth -= 1
-
-        def handle_data(self, data):
-            data = data.strip()
-            if data:
-                self._current.append(data)
 
     results = []
+    for post in posts_data:
+        text = post.get("text", "")
+        href = post.get("href", "")
+        post_id = _extract_post_id(href)
+        if not post_id:
+            continue
+        result = _try_post(text, post_id, group_id)
+        if result:
+            results.append(result)
 
-    # Find post blocks — mbasic wraps each post in <div> with a story permalink
-    post_pattern = re.compile(
-        r'href="(/groups/[^"]*permalink/(\d+)[^"]*)"[^>]*>.*?'
-        r'(<div[^>]*>.*?</div>)',
-        re.DOTALL
-    )
-
-    # Simpler: extract all text blocks between story divs
-    # mbasic posts have a "story" anchor linking to /groups/ID/permalink/POST_ID
-    permalink_re = re.compile(r'/groups/\w+/permalink/(\d+)')
-    post_ids = permalink_re.findall(html)
-    seen_ids = set()
-
-    # Split HTML around each story section
-    story_re = re.compile(r'<article[^>]*>(.*?)</article>', re.DOTALL)
-    articles = story_re.findall(html)
-
-    if not articles:
-        # Fallback: split around permalink anchors
-        chunks = re.split(r'(?=href="/groups/\w+/permalink/)', html)
-        for chunk in chunks:
-            m = permalink_re.search(chunk)
-            if not m:
-                continue
-            post_id = m.group(1)
-            if post_id in seen_ids:
-                continue
-            seen_ids.add(post_id)
-            text = re.sub(r'<[^>]+>', ' ', chunk)
-            text = re.sub(r'\s+', ' ', text).strip()
-            result = _try_post(text, post_id, group_id)
-            if result:
-                results.append(result)
-    else:
-        for article in articles:
-            m = permalink_re.search(article)
-            post_id = m.group(1) if m else None
-            if not post_id or post_id in seen_ids:
-                continue
-            seen_ids.add(post_id)
-            text = re.sub(r'<[^>]+>', ' ', article)
-            text = re.sub(r'\s+', ' ', text).strip()
-            result = _try_post(text, post_id, group_id)
-            if result:
-                results.append(result)
-
+    logger.info(f"Group {group_id}: {len(results)} relevant posts out of {len(posts_data)}")
     return results
+
+
+def _extract_post_id(href: str) -> str:
+    for pattern in [r"/posts/(\d+)", r"permalink/(\d+)", r"[?&]id=(\d+)"]:
+        m = re.search(pattern, href)
+        if m:
+            return m.group(1)
+    return ""
 
 
 def _try_post(text: str, post_id: str, group_id: str) -> Optional[dict]:
@@ -157,19 +140,17 @@ def _try_post(text: str, post_id: str, group_id: str) -> Optional[dict]:
     if price and price > SEARCH_CRITERIA["max_price"]:
         return None
 
-    neighborhood = _extract_neighborhood(text)
-
     return {
         "source": "facebook_groups",
         "listing_id": post_id,
         "title": _extract_title(text),
         "price": price,
         "rooms": _extract_rooms(text),
-        "neighborhood": neighborhood,
+        "neighborhood": _extract_neighborhood(text),
         "address": "",
         "description": text[:400],
         "published_at": None,
-        "url": f"https://www.facebook.com/groups/{group_id}/permalink/{post_id}/",
+        "url": f"https://www.facebook.com/groups/{group_id}/posts/{post_id}/",
     }
 
 

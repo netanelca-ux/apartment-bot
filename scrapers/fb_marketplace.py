@@ -1,22 +1,17 @@
 from __future__ import annotations
 
-"""
-Facebook Marketplace scraper — lightweight httpx approach via mbasic.facebook.com.
-No browser required. Scrapes the mobile HTML version of Marketplace rentals.
-"""
 import logging
 import re
 from typing import Optional
 
 from config import SEARCH_CRITERIA
-from scrapers.fb_session import get_cookies, make_client
+from scrapers.fb_session import get_cookies
 
 logger = logging.getLogger(__name__)
 
 MARKETPLACE_URL = (
-    "https://mbasic.facebook.com/marketplace/108312912534207/rentals/"
-    f"?maxPrice={SEARCH_CRITERIA['max_price']}"
-    "&sortBy=creation_time_descend"
+    "https://www.facebook.com/marketplace/108312912534207/rentals/"
+    f"?maxPrice={SEARCH_CRITERIA['max_price']}&sortBy=creation_time_descend"
 )
 
 OTHER_NEIGHBORHOODS = [
@@ -26,90 +21,109 @@ OTHER_NEIGHBORHOODS = [
     "פתח תקווה", "הרצליה", "רעננה",
 ]
 
+# Extract unique marketplace items: id, text, href
+_EXTRACT_JS = """
+() => {
+    const seen = new Set();
+    const items = [];
+    document.querySelectorAll('a[href*="/marketplace/item/"]').forEach(el => {
+        const m = el.href.match(/marketplace\\/item\\/(\\d+)/);
+        if (!m || seen.has(m[1])) return;
+        seen.add(m[1]);
+        const container = el.closest('[role="listitem"]') || el.parentElement || el;
+        items.push({id: m[1], text: container.innerText, href: el.href});
+    });
+    return items;
+}
+"""
 
-async def fetch_listings(_ctx=None) -> list[dict]:
+
+async def fetch_listings(browser=None) -> list[dict]:
+    from scrapers.browser import managed_browser, new_page as _new_page
+
     cookies = get_cookies()
     if not cookies:
         logger.warning("No Facebook cookies — skipping Marketplace scan")
         return []
 
-    async with make_client(cookies) as client:
+    fb_cookies = [
+        {"name": k, "value": v, "domain": ".facebook.com", "path": "/"}
+        for k, v in cookies.items()
+    ]
+
+    async def _run(b):
+        page = await _new_page(b, cookies=fb_cookies)
+        results = []
         try:
-            resp = await client.get(MARKETPLACE_URL)
-        except Exception as e:
-            logger.error(f"Facebook Marketplace request failed: {e}")
-            return []
+            try:
+                await page.goto(MARKETPLACE_URL, wait_until="domcontentloaded", timeout=30_000)
+            except Exception as e:
+                logger.error(f"Facebook Marketplace: navigation failed: {e}")
+                return []
 
-    if resp.status_code != 200:
-        logger.warning(f"Marketplace: HTTP {resp.status_code}")
-        return []
+            current_url = page.url
+            if "login" in current_url or "checkpoint" in current_url:
+                logger.warning(f"Marketplace: session issue — redirected to {current_url}")
+                return []
 
-    if "login" in str(resp.url).lower() or 'id="login_form"' in resp.text:
-        logger.warning("Facebook Marketplace: redirected to login — cookies expired")
-        return []
+            # Wait for listing cards
+            try:
+                await page.wait_for_selector('a[href*="/marketplace/item/"]', timeout=10_000)
+            except Exception:
+                pass
 
-    results = _parse_marketplace_listings(resp.text)
-    logger.info(f"Facebook Marketplace: {len(results)} relevant listings found")
-    return results
+            try:
+                items_data: list[dict] = await page.evaluate(_EXTRACT_JS)
+            except Exception as e:
+                logger.warning(f"Marketplace: JS evaluation failed: {e}")
+                return []
+
+            for item in items_data:
+                listing = _parse_item(item)
+                if listing:
+                    results.append(listing)
+        finally:
+            await page.context.close()
+
+        logger.info(f"Facebook Marketplace: {len(results)} relevant listings found")
+        return results
+
+    if browser is not None:
+        return await _run(browser)
+    async with managed_browser() as b:
+        return await _run(b)
 
 
-def _parse_marketplace_listings(html: str) -> list[dict]:
-    results = []
-    seen_ids: set[str] = set()
+def _parse_item(item: dict) -> Optional[dict]:
+    listing_id = item.get("id", "")
+    text = item.get("text", "")
 
-    # Marketplace item links: /marketplace/item/123456/
-    item_re = re.compile(r'/marketplace/item/(\d+)/')
-    ids = item_re.findall(html)
+    if not listing_id or not text:
+        return None
 
-    if not ids:
-        logger.debug("Marketplace: no item IDs found in HTML")
-        return []
+    if _has_other_neighborhood(text):
+        return None
 
-    # Split HTML around each item anchor to get per-listing context
-    chunks = re.split(r'(?=/marketplace/item/\d+/)', html)
+    price = _extract_price(text)
+    if price and price > SEARCH_CRITERIA["max_price"]:
+        return None
 
-    for chunk in chunks:
-        m = item_re.search(chunk)
-        if not m:
-            continue
-        listing_id = m.group(1)
-        if listing_id in seen_ids:
-            continue
-        seen_ids.add(listing_id)
+    neighborhood = _extract_neighborhood(text)
+    if not neighborhood and not _matches_neighborhoods(text):
+        return None
 
-        text = re.sub(r'<[^>]+>', ' ', chunk)
-        text = re.sub(r'\s+', ' ', text).strip()
-
-        if not text or len(text) < 10:
-            continue
-
-        # Skip listings from other neighborhoods
-        if _has_other_neighborhood(text):
-            continue
-
-        price = _extract_price(text)
-        if price and price > SEARCH_CRITERIA["max_price"]:
-            continue
-
-        neighborhood = _extract_neighborhood(text)
-        # Only include if neighborhood matches or text has a known neighborhood
-        if not neighborhood and not _matches_neighborhoods(text):
-            continue
-
-        results.append({
-            "source": "facebook_marketplace",
-            "listing_id": listing_id,
-            "title": _extract_title(text),
-            "price": price,
-            "rooms": _extract_rooms(text),
-            "neighborhood": neighborhood,
-            "address": "",
-            "description": text[:400],
-            "published_at": None,
-            "url": f"https://www.facebook.com/marketplace/item/{listing_id}/",
-        })
-
-    return results
+    return {
+        "source": "facebook_marketplace",
+        "listing_id": listing_id,
+        "title": _extract_title(text),
+        "price": price,
+        "rooms": _extract_rooms(text),
+        "neighborhood": neighborhood,
+        "address": "",
+        "description": text[:400],
+        "published_at": None,
+        "url": f"https://www.facebook.com/marketplace/item/{listing_id}/",
+    }
 
 
 def _matches_neighborhoods(text: str) -> bool:

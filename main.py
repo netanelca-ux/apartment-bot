@@ -19,6 +19,7 @@ from bot.onboarding import build_conversation_handler
 from bot.settings_panel import register_settings_handlers
 from db.storage import init_db, is_seen, mark_seen, get_active_users, get_user, upsert_user
 from scrapers import fb_marketplace, fb_groups, yad2
+from scrapers.browser import managed_browser
 from scrapers.fb_session import check_session
 from scrapers.filters import passes_filters
 
@@ -29,6 +30,9 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 logger = logging.getLogger("main")
+
+# Ensures only one browser-based scan runs at a time (avoids OOM from overlapping jobs)
+_scan_lock = asyncio.Lock()
 
 
 # ── core job logic ────────────────────────────────────────────────────────────
@@ -97,40 +101,31 @@ async def process_listings(listings: list[dict]):
 
 # ── scheduled jobs ────────────────────────────────────────────────────────────
 
-async def job_yad2():
+async def _run_all_scrapers():
+    """Open one browser, run all scrapers sequentially, return combined listings."""
+    async with managed_browser() as browser:
+        logger.info("🌐 Browser open — starting scan")
+        yad2_listings = await yad2.fetch_listings(browser)
+        mp_listings = await fb_marketplace.fetch_listings(browser)
+        groups_listings = await fb_groups.fetch_listings(browser)
+    logger.info("🌐 Browser closed")
+    return yad2_listings + mp_listings + groups_listings
+
+
+async def job_scan():
     if commands.is_paused():
         return
-    logger.info("⏱  Starting Yad2 scan...")
-    try:
-        listings = await yad2.fetch_listings()
-        await process_listings(listings)
-        logger.info(f"✅ Yad2 done — {len(listings)} found")
-    except Exception as e:
-        logger.error(f"Yad2 job failed: {e}")
-
-
-async def job_fb_marketplace():
-    if commands.is_paused():
+    if _scan_lock.locked():
+        logger.info("Scan already running — skipping this tick")
         return
-    logger.info("⏱  Starting Facebook Marketplace scan...")
-    try:
-        listings = await fb_marketplace.fetch_listings()
-        await process_listings(listings)
-        logger.info(f"✅ FB Marketplace done — {len(listings)} found")
-    except Exception as e:
-        logger.error(f"FB Marketplace job failed: {e}")
-
-
-async def job_fb_groups():
-    if commands.is_paused():
-        return
-    logger.info("⏱  Starting Facebook Groups scan...")
-    try:
-        listings = await fb_groups.fetch_listings()
-        await process_listings(listings)
-        logger.info(f"✅ FB Groups done — {len(listings)} found")
-    except Exception as e:
-        logger.error(f"FB Groups job failed: {e}")
+    async with _scan_lock:
+        logger.info("⏱  Starting full scan (Yad2 + Marketplace + Groups)...")
+        try:
+            listings = await _run_all_scrapers()
+            await process_listings(listings)
+            logger.info(f"✅ Scan done — {len(listings)} total found")
+        except Exception as e:
+            logger.error(f"Scan job failed: {e}")
 
 
 async def job_keepalive():
@@ -150,9 +145,7 @@ async def job_keepalive():
 
 async def scan_all():
     """Run all scrapers once — called by the /scan Telegram command."""
-    await job_yad2()
-    await job_fb_marketplace()
-    await job_fb_groups()
+    await job_scan()
 
 
 # ── startup checks ────────────────────────────────────────────────────────────
@@ -201,17 +194,14 @@ async def main():
     tg_app.add_handler(CommandHandler("pause", commands.cmd_pause))
     tg_app.add_handler(CommandHandler("resume", commands.cmd_resume))
 
+    scan_interval = min(config.YAD2_POLL_INTERVAL, config.FACEBOOK_POLL_INTERVAL)
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(job_yad2, IntervalTrigger(seconds=config.YAD2_POLL_INTERVAL),
-                      id="yad2", max_instances=1, coalesce=True)
-    scheduler.add_job(job_fb_marketplace, IntervalTrigger(seconds=config.FACEBOOK_POLL_INTERVAL),
-                      id="fb_marketplace", max_instances=1, coalesce=True)
-    scheduler.add_job(job_fb_groups, IntervalTrigger(seconds=config.FACEBOOK_POLL_INTERVAL),
-                      id="fb_groups", max_instances=1, coalesce=True)
+    scheduler.add_job(job_scan, IntervalTrigger(seconds=scan_interval),
+                      id="scan", max_instances=1, coalesce=True)
     scheduler.add_job(job_keepalive, IntervalTrigger(hours=2),
                       id="fb_keepalive", max_instances=1, coalesce=True)
     scheduler.start()
-    logger.info(f"📅 Scheduler running — Facebook every {config.FACEBOOK_POLL_INTERVAL // 60}m, keepalive every 2h")
+    logger.info(f"📅 Scheduler running — full scan every {scan_interval // 60}m, keepalive every 2h")
 
     await tg_app.initialize()
     await tg_app.start()
